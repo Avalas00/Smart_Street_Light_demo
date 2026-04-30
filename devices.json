@@ -1,0 +1,18 @@
+{
+  "devices": [
+    {
+      "id": "0024E979D6",
+      "name": "79D6",
+      "ip": "192.168.50.202",
+      "enabled": true,
+      "group_id": 6
+    },
+    {
+      "id": "0024E9D1FF",
+      "name": "D1FF",
+      "ip": "192.168.50.202",
+      "enabled": true,
+      "group_id": 6
+    }
+  ]
+}

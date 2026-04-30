@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+core
+models/
+*.bak*
+.DS_Store

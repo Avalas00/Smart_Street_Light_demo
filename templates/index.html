@@ -1,0 +1,700 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AGX 智慧路燈精簡版</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <style>
+        :root {
+            color-scheme: dark;
+            --bg: #0d1117;
+            --panel: #161b22;
+            --panel-2: #21262d;
+            --panel-3: #010409;
+            --text: #c9d1d9;
+            --muted: #8b949e;
+            --line: #30363d;
+            --green: #238636;
+            --amber: #d29922;
+            --red: #f85149;
+            --blue: #1f6feb;
+            --accent: #58a6ff;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        html,
+        body {
+            height: 100%;
+        }
+
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+            background: var(--bg);
+            color: var(--text);
+            background-image: radial-gradient(circle at top right, #161b22 0%, #0d1117 100%);
+        }
+
+        header {
+            height: 60px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            padding: 0 24px;
+            border-bottom: 1px solid var(--line);
+            background: rgba(1, 4, 9, 0.8);
+            backdrop-filter: blur(8px);
+            z-index: 100;
+        }
+
+        h1 {
+            margin: 0;
+            font-size: 18px;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+            background: linear-gradient(90deg, #58a6ff, #bc8cff);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        main {
+            height: calc(100dvh - 60px);
+            min-height: 0;
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 400px;
+            gap: 16px;
+            padding: 16px;
+        }
+
+        .stage,
+        .side {
+            min-height: 0;
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 4px 24px rgba(0, 0, 0, 0.3);
+        }
+
+        .stage {
+            display: grid;
+            grid-template-rows: minmax(0, 1fr) auto;
+        }
+
+        .video-wrap {
+            min-height: 0;
+            background: #000;
+            display: grid;
+            place-items: center;
+            position: relative;
+        }
+
+        .video-wrap img {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+            display: block;
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+            gap: 1px;
+            background: var(--line);
+            border-top: 1px solid var(--line);
+        }
+
+        .stat {
+            min-width: 0;
+            background: var(--panel);
+            padding: 14px;
+            transition: background 0.2s;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+        }
+
+        .stat:hover {
+            background: var(--panel-2);
+        }
+
+        .stat span {
+            display: block;
+            color: var(--muted);
+            font-size: 11px;
+            font-weight: 500;
+            margin-bottom: 6px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .stat strong {
+            display: block;
+            font-size: 20px;
+            font-weight: 600;
+            line-height: 1.2;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            color: #f0f6fc;
+        }
+
+        .stat.countdown-active strong {
+            color: var(--amber);
+            animation: pulse-countdown 1.5s ease-in-out infinite;
+        }
+
+        @keyframes pulse-countdown {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+
+        .stat.lux-card strong {
+            color: #79c0ff;
+        }
+
+        .lost-badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 1px 6px;
+            border-radius: 4px;
+            background: rgba(248, 81, 73, 0.1);
+            border: 1px solid rgba(248, 81, 73, 0.4);
+            color: var(--red);
+            font-size: 10px;
+            font-weight: 600;
+            margin-left: 6px;
+            vertical-align: middle;
+        }
+
+        .send-btn {
+            width: 100%;
+            margin-top: 12px;
+            height: 44px;
+            background: var(--blue);
+            border: 1px solid rgba(240, 246, 252, 0.1);
+            color: #fff;
+            font-size: 14px;
+            font-weight: 600;
+            border-radius: 6px;
+            transition: all 0.2s;
+        }
+
+        .send-btn:hover:not(:disabled) {
+            background: #238cf7;
+            transform: translateY(-1px);
+        }
+
+        .send-btn.pending {
+            background: var(--amber);
+            color: #000;
+            animation: pulse-send 1.2s ease-in-out infinite;
+        }
+
+        @keyframes pulse-send {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.8; }
+        }
+
+        .side {
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+            scrollbar-width: thin;
+        }
+
+        .panel {
+            min-height: 0;
+            padding: 20px;
+            border-bottom: 1px solid var(--line);
+        }
+
+        .panel:last-child {
+            border-bottom: none;
+        }
+
+        h2 {
+            margin: 0 0 16px;
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .mode-toggle {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+
+        button {
+            height: 40px;
+            border: 1px solid var(--line);
+            background: var(--panel-2);
+            color: var(--text);
+            border-radius: 6px;
+            padding: 0 16px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        button:hover:not(:disabled) {
+            border-color: var(--muted);
+            background: #30363d;
+        }
+
+        button.active {
+            border-color: var(--accent);
+            background: rgba(31, 111, 235, 0.1);
+            color: var(--accent);
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .slider-row {
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 16px;
+            align-items: center;
+        }
+
+        input[type="range"] {
+            -webkit-appearance: none;
+            width: 100%;
+            height: 6px;
+            background: var(--line);
+            border-radius: 3px;
+            outline: none;
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 18px;
+            height: 18px;
+            background: var(--accent);
+            border-radius: 50%;
+            cursor: pointer;
+            border: 3px solid var(--bg);
+            box-shadow: 0 0 0 1px var(--accent);
+        }
+
+        .value {
+            min-width: 48px;
+            text-align: right;
+            font-size: 18px;
+            font-weight: 600;
+            color: var(--accent);
+        }
+
+        .alert {
+            min-height: 80px;
+            max-height: 120px;
+            overflow: auto;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: rgba(0, 0, 0, 0.2);
+            padding: 12px;
+            color: var(--muted);
+            font-size: 13px;
+            line-height: 1.6;
+        }
+
+        .alert.hot {
+            border-color: rgba(210, 153, 34, 0.4);
+            color: var(--amber);
+            background: rgba(210, 153, 34, 0.05);
+        }
+
+        .log-panel {
+            flex: 1;
+            min-height: 200px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .log {
+            flex: 1;
+            min-height: 0;
+            overflow: auto;
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            padding: 12px;
+            font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+            font-size: 11px;
+            color: #7ee787;
+            line-height: 1.5;
+        }
+
+        .pill {
+            display: inline-flex;
+            align-items: center;
+            padding: 4px 12px;
+            border-radius: 20px;
+            border: 1px solid var(--line);
+            color: var(--muted);
+            background: var(--panel-2);
+            font-size: 12px;
+            font-weight: 500;
+        }
+
+        .pill.ok {
+            color: #3fb950;
+            border-color: rgba(63, 185, 80, 0.4);
+            background: rgba(63, 185, 80, 0.1);
+        }
+
+        .pill.warn {
+            color: var(--amber);
+            border-color: rgba(210, 153, 34, 0.4);
+            background: rgba(210, 153, 34, 0.1);
+        }
+
+        @media (max-width: 1200px) {
+            main {
+                grid-template-columns: 1fr 340px;
+            }
+        }
+
+        @media (max-width: 1000px) {
+            body {
+                overflow: auto;
+            }
+
+            main {
+                height: auto;
+                grid-template-columns: 1fr;
+            }
+
+            .stage {
+                grid-template-rows: auto;
+            }
+
+            .video-wrap img {
+                width: 100%;
+                height: auto;
+            }
+        }
+
+        @media (max-width: 600px) {
+            header {
+                padding: 0 16px;
+            }
+            .stats {
+                grid-template-columns: repeat(2, 1fr);
+            }
+            .stat strong {
+                font-size: 18px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <header>
+        <h1>AGX 智慧路燈精簡版</h1>
+        <div id="device-pill" class="pill warn">路燈未連線</div>
+    </header>
+    <main>
+        <section class="stage">
+            <div class="video-wrap">
+                <img src="/video_feed" alt="YOLO 即時辨識畫面">
+            </div>
+            <div class="stats">
+                <div class="stat"><span>偵測人數</span><strong id="people">0</strong></div>
+                <div class="stat"><span>自動 Level</span><strong id="level">L0</strong></div>
+                <div class="stat"><span>狀態</span><strong id="level-label">standby</strong></div>
+                <div class="stat" id="countdown-stat"><span>倒數計時</span><strong id="countdown">--</strong></div>
+                <div class="stat"><span>路燈數量</span><strong id="device-count">0</strong></div>
+                <div class="stat lux-card"><span>環境照度 (lux)</span><strong id="lux-avg">--</strong></div>
+                <div class="stat"><span>Server IP</span><strong id="server-address" style="font-size: 13px;">--</strong></div>
+                <div class="stat"><span>已連線 IP</span><strong id="connected-ips" style="font-size: 13px;">--</strong></div>
+            </div>
+            <div class="stats" id="device-stats">
+                <!-- Device brightness will be inserted here dynamically -->
+            </div>
+        </section>
+        <aside class="side">
+            <div class="panel">
+                <h2>控制模式</h2>
+                <div class="mode-toggle">
+                    <button id="auto-btn" class="active" onclick="setMode('auto')">自動</button>
+                    <button id="manual-btn" onclick="setMode('manual')">手動</button>
+                </div>
+            </div>
+            <div id="manual-panel" class="panel">
+                <h2>手動調光</h2>
+                <div class="mode-toggle" style="margin-bottom: 12px; height: 36px;">
+                    <button id="ctrl-single-btn" class="active" onclick="setControlTarget('single')" style="height: 32px; font-size: 13px;">單盞</button>
+                    <button id="ctrl-group-btn" onclick="setControlTarget('group')" style="height: 32px; font-size: 13px;">群組</button>
+                </div>
+                
+                <div id="single-ctrl-panel">
+                    <div class="device-selector" style="margin-bottom: 12px;">
+                        <label style="color: var(--muted); font-size: 13px;">選擇路燈：</label>
+                        <select id="device-select" style="background: #121619; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; font-size: 14px; width: 100%;">
+                            <!-- Options will be populated dynamically -->
+                        </select>
+                    </div>
+                </div>
+
+                <div id="group-ctrl-panel" style="display: none; margin-bottom: 12px;">
+                    <div class="slider-row">
+                        <label style="color: var(--muted); font-size: 13px;">群組編號 (0-255)：</label>
+                        <input id="ctrl-group-id" type="number" min="0" max="255" value="0" style="background: #121619; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; width: 80px;">
+                    </div>
+                </div>
+
+                <div class="slider-row">
+                    <input id="brightness-slider" type="range" min="0" max="100" value="20" disabled>
+                    <div id="slider-value" class="value">20%</div>
+                </div>
+                <button id="send-btn" class="send-btn" disabled onclick="sendBrightness()">📤 發送亮度</button>
+            </div>
+            <div id="group-setting-panel" class="panel">
+                <h2>群組設定</h2>
+                <div class="slider-row" style="margin-bottom: 12px;">
+                    <label style="color: var(--muted); font-size: 13px;">群組編號 (0-255)：</label>
+                    <input id="group-id-input" type="number" min="0" max="255" value="0" style="background: #121619; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; width: 80px;">
+                </div>
+                <button id="set-group-btn" class="send-btn" disabled onclick="setGroup()" style="background: #2d1b4a; border-color: #7c3aed; color: #c4b5fd;">💾 設定群組</button>
+            </div>
+            <div class="panel">
+                <h2>VLM 警示</h2>
+                <div id="vlm-alert" class="alert">VLM 尚未啟用或尚未觸發。</div>
+            </div>
+            <div class="panel log-panel">
+                <h2>通訊日誌</h2>
+                <div id="log" class="log"></div>
+            </div>
+        </aside>
+    </main>
+    <script>
+        const socket = io();
+        const els = {
+            people: document.getElementById("people"),
+            level: document.getElementById("level"),
+            levelLabel: document.getElementById("level-label"),
+            countdown: document.getElementById("countdown"),
+            countdownStat: document.getElementById("countdown-stat"),
+            deviceCount: document.getElementById("device-count"),
+            deviceSelect: document.getElementById("device-select"),
+            autoBtn: document.getElementById("auto-btn"),
+            manualBtn: document.getElementById("manual-btn"),
+            slider: document.getElementById("brightness-slider"),
+            sliderValue: document.getElementById("slider-value"),
+            sendBtn: document.getElementById("send-btn"),
+            ctrlSingleBtn: document.getElementById("ctrl-single-btn"),
+            ctrlGroupBtn: document.getElementById("ctrl-group-btn"),
+            singleCtrlPanel: document.getElementById("single-ctrl-panel"),
+            groupCtrlPanel: document.getElementById("group-ctrl-panel"),
+            ctrlGroupId: document.getElementById("ctrl-group-id"),
+            groupIdInput: document.getElementById("group-id-input"),
+            setGroupBtn: document.getElementById("set-group-btn"),
+            manualPanel: document.getElementById("manual-panel"),
+            groupSettingPanel: document.getElementById("group-setting-panel"),
+            devicePill: document.getElementById("device-pill"),
+            log: document.getElementById("log"),
+            vlmAlert: document.getElementById("vlm-alert"),
+            luxAvg: document.getElementById("lux-avg"),
+            serverAddress: document.getElementById("server-address"),
+            connectedIps: document.getElementById("connected-ips"),
+            brightnessData: {},  // Store device brightness data
+        };
+        let _pendingBrightness = null; // staged value waiting for send
+        let _ctrlTarget = 'single';
+
+        function setControlTarget(target) {
+            _ctrlTarget = target;
+            els.ctrlSingleBtn.classList.toggle('active', target === 'single');
+            els.ctrlGroupBtn.classList.toggle('active', target === 'group');
+            els.singleCtrlPanel.style.display = target === 'single' ? 'block' : 'none';
+            els.groupCtrlPanel.style.display = target === 'group' ? 'block' : 'none';
+        }
+
+        function setMode(mode) {
+            socket.emit("set_mode", { mode });
+        }
+
+        function updateMode(mode) {
+            const manual = mode === "manual";
+            els.autoBtn.classList.toggle("active", !manual);
+            els.manualBtn.classList.toggle("active", manual);
+            els.slider.disabled = !manual;
+            els.sendBtn.disabled = !manual;
+            els.setGroupBtn.disabled = !manual;
+
+            // Hide/Show manual-only panels
+            if (els.manualPanel) els.manualPanel.style.display = manual ? 'block' : 'none';
+            if (els.groupSettingPanel) els.groupSettingPanel.style.display = manual ? 'block' : 'none';
+        }
+
+        function setGroup() {
+            const selectedDevice = els.deviceSelect?.value;
+            if (!selectedDevice) {
+                alert("請先選擇特定的路燈再設定群組");
+                return;
+            }
+            const groupId = Number(els.groupIdInput.value);
+            socket.emit("set_group", { device_id: selectedDevice, group_id: groupId });
+        }
+
+        function sendBrightness() {
+            const data = { brightness: Number(els.slider.value) };
+            if (_ctrlTarget === 'single') {
+                data.device_id = els.deviceSelect?.value || null;
+            } else {
+                data.group_id = Number(els.ctrlGroupId.value);
+            }
+            socket.emit("send_brightness", data);
+            _pendingBrightness = null;
+            els.sendBtn.classList.remove("pending");
+        }
+
+        function updateVlm(alert) {
+            if (!alert) {
+                els.vlmAlert.className = "alert";
+                els.vlmAlert.textContent = "VLM 尚未啟用或尚未觸發。";
+                return;
+            }
+            els.vlmAlert.className = alert.alert ? "alert hot" : "alert";
+            const risk = alert.risk_level || "unknown";
+            const type = alert.abnormal_type ? `${alert.abnormal_type} / ` : "";
+            const msg = alert.message || "已完成影像檢查。";
+            els.vlmAlert.textContent = `[${risk}] ${type}${msg}`;
+        }
+
+        function renderState(data) {
+            els.people.textContent = data.person_count ?? 0;
+            els.level.textContent = `L${data.level ?? 0}`;
+
+            const cdActive = Boolean(data.countdown_active);
+            const cdRemain = data.countdown_remaining ?? 0;
+            if (cdActive && cdRemain > 0) {
+                els.countdown.textContent = `${cdRemain}s`;
+                els.countdownStat.classList.add("countdown-active");
+                els.levelLabel.textContent = "倒數中";
+            } else {
+                els.countdown.textContent = "--";
+                els.countdownStat.classList.remove("countdown-active");
+                els.levelLabel.textContent = data.level_label || "standby";
+            }
+
+            if (_pendingBrightness === null) {
+                els.slider.value = data.brightness ?? 0;
+                els.sliderValue.textContent = `${data.brightness ?? 0}%`;
+            }
+            updateMode(data.mode || "auto");
+            updateVlm(data.vlm_last_alert);
+
+            const lux = data.lux_avg;
+            els.luxAvg.textContent = lux !== null && lux !== undefined ? `${lux}` : '--';
+
+            if (els.serverAddress) els.serverAddress.textContent = data.server_info || '--';
+            if (els.connectedIps) {
+                els.connectedIps.textContent = data.clients?.length ? data.clients.join(", ") : "無連線";
+            }
+
+            const deviceCount = data.devices?.length ?? 0;
+            els.deviceCount.textContent = deviceCount;
+
+            if (els.deviceSelect && data.devices) {
+                const currentValue = els.deviceSelect.value;
+                els.deviceSelect.innerHTML = data.devices.map(device => 
+                    `<option value="${device.id}">${escapeHtml(device.name)}</option>`
+                ).join("");
+                if (currentValue) {
+                    els.deviceSelect.value = currentValue;
+                }
+            }
+
+            const deviceStats = document.getElementById("device-stats");
+            if (deviceStats && data.devices && data.device_brightness) {
+                els.brightnessData = data.device_brightness;
+                deviceStats.innerHTML = data.devices.map(device => {
+                    const isLost = data.device_lost?.[device.id] ?? false;
+                    const brightness = isLost ? '--' : (data.device_brightness[device.id] ?? 0);
+                    const groupId = device.group_id ?? 0;
+                    const lostBadge = isLost ? `<span class="lost-badge">失聯</span>` : '';
+                    const nameStr = escapeHtml(device.name);
+                    return `<div class="stat" style="${isLost ? 'background:#1d0c0c;' : ''}">
+                        <span>${nameStr} (群組 ${groupId})${lostBadge}</span>
+                        <strong style="${isLost ? 'color:var(--red);' : ''}">${brightness}%</strong>
+                    </div>`;
+                }).join("");
+            }
+
+            const connected = Boolean(data.device_connected);
+            els.devicePill.className = connected ? "pill ok" : "pill warn";
+            els.devicePill.textContent = data.tcp_error
+                ? "TCP 未啟動"
+                : (connected ? `路燈已連線 ${data.device_ip}` : `等待路燈 ${data.device_ip}`);
+
+            if (Array.isArray(data.logs)) {
+                els.log.innerHTML = data.logs.map((line) => `<div>${escapeHtml(line)}</div>`).join("");
+                els.log.scrollTop = els.log.scrollHeight;
+            }
+        }
+
+        function escapeHtml(text) {
+            return String(text).replace(/[&<>"']/g, (ch) => ({
+                "&": "&amp;",
+                "<": "&lt;",
+                ">": "&gt;",
+                '"': "&quot;",
+                "'": "&#039;",
+            }[ch]));
+        }
+
+        els.slider.addEventListener("input", () => {
+            const v = els.slider.value;
+            els.sliderValue.textContent = `${v}%`;
+            _pendingBrightness = Number(v);
+            if (els.sendBtn && !els.sendBtn.disabled) {
+                els.sendBtn.classList.add("pending");
+            }
+        });
+
+        els.deviceSelect?.addEventListener("change", () => {
+            const selectedDevice = els.deviceSelect.value;
+            if (selectedDevice && els.brightnessData) {
+                const deviceBrightness = els.brightnessData[selectedDevice];
+                if (deviceBrightness !== undefined) {
+                    els.slider.value = deviceBrightness;
+                    els.sliderValue.textContent = `${deviceBrightness}%`;
+                    _pendingBrightness = null;
+                    els.sendBtn?.classList.remove("pending");
+                }
+            }
+        });
+
+        socket.on("state", renderState);
+        socket.on("packet_log", (data) => {
+            const line = document.createElement("div");
+            line.textContent = data.msg;
+            els.log.appendChild(line);
+            els.log.scrollTop = els.log.scrollHeight;
+        });
+        socket.on("vlm_alert", updateVlm);
+
+        fetch("/api/status").then((res) => res.json()).then(renderState).catch(() => { });
+    </script>
+</body>
+
+</html>
