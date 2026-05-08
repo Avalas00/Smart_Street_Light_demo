@@ -151,6 +151,9 @@ state = {
     "countdown_remaining": 0,
     "lux_avg": None,
     "lux_raw": None,
+    "lux_last_seen": None,
+    "lux_failures": 0,
+    "lux_error": "",
     "pending_level": None,
     "pending_brightness": None,
     "device_target_brightness": {d["id"]: AUTO_LEVELS[0].brightness for d in DEVICES},
@@ -184,7 +187,7 @@ vlm_harness = build_vlm_harness() if build_vlm_harness else None
 _device_last_seen: Dict[str, float] = {d["id"]: 0.0 for d in DEVICES}
 # Per-device last control acknowledgment timestamp
 _last_ack_time: Dict[str, float] = {d["id"]: 0.0 for d in DEVICES}
-DEVICE_LOST_TIMEOUT = 180  # 3 minutes
+DEVICE_LOST_TIMEOUT = 1000  # 3 minutes
 
 # USB RS-485 Light Sensor (JNC LUX20)
 USB_LUX_PORT = os.getenv("USB_LUX_PORT", "/dev/ttyUSB0")
@@ -192,6 +195,7 @@ USB_LUX_BAUD = int(os.getenv("USB_LUX_BAUD", "9600"))
 USB_LUX_UNIT_ID = int(os.getenv("USB_LUX_UNIT_ID", "77"))
 LUX_WINDOW = 5  # rolling-average window in seconds
 _lux_samples: deque = deque()  # (timestamp, lux)
+_last_lux_error_log = 0.0
 
 
 def _drop_tcp_client(client_ip: str, reason: str) -> None:
@@ -223,7 +227,7 @@ def log(message: str) -> None:
 def choose_auto_level(person_count: int, lux: Optional[float]) -> LightLevel:
     """Choose the appropriate light level based on environmental lux and person count."""
     # 1. Day mode: if lux > 150, stay at L0 (standby, 0% brightness)
-    if lux is not None and lux > 150:
+    if lux is not None and lux > 500:
         return AUTO_LEVELS[0]
     
     # 2. Night mode: lux <= 150 (or sensor unavailable)
@@ -1040,36 +1044,126 @@ def on_send_brightness(data):
     broadcast_state()
 
 
-def _read_usb_lux() -> Optional[float]:
+def _modbus_crc16(payload: bytes) -> int:
+    crc = 0xFFFF
+    for byte in payload:
+        crc ^= byte
+        for _ in range(8):
+            if crc & 1:
+                crc = (crc >> 1) ^ 0xA001
+            else:
+                crc >>= 1
+    return crc
+
+
+def _read_usb_lux(ser_obj) -> Optional[float]:
     """Read lux from JNC LUX20 via USB RS-485 Modbus."""
+    global _last_lux_error_log
     try:
-        from pymodbus.client import ModbusSerialClient
-        client = ModbusSerialClient(
-            port=USB_LUX_PORT,
-            baudrate=USB_LUX_BAUD,
-            parity='N',
-            stopbits=1,
-            bytesize=8,
-            timeout=1
-        )
-        if not client.connect():
+        request = bytes([USB_LUX_UNIT_ID, 0x03, 0x00, 0x00, 0x00, 0x02])
+        crc = _modbus_crc16(request)
+        packet = request + bytes([crc & 0xFF, (crc >> 8) & 0xFF])
+        ser_obj.reset_input_buffer()
+        ser_obj.write(packet)
+        ser_obj.flush()
+        response = ser_obj.read(9)
+        if len(response) < 9:
+            now = time.time()
+            if now - _last_lux_error_log >= 30.0:
+                log(f"USB lux no-response port={USB_LUX_PORT} baud={USB_LUX_BAUD} unit={USB_LUX_UNIT_ID}")
+                _last_lux_error_log = now
             return None
-        
-        response = client.read_holding_registers(address=0x0000, count=2, slave=USB_LUX_UNIT_ID)
-        client.close()
-        
-        if not response.isError():
-            high_word = response.registers[0]
-            low_word = response.registers[1]
-            lux_value = (high_word << 16) | low_word
-            return float(lux_value)
-        return None
+        body, recv_crc = response[:-2], response[-2] | (response[-1] << 8)
+        if _modbus_crc16(body) != recv_crc or body[0] != USB_LUX_UNIT_ID or body[1] != 0x03 or body[2] < 4:
+            now = time.time()
+            if now - _last_lux_error_log >= 30.0:
+                log(f"USB lux bad-response hex={response.hex().upper()}")
+                _last_lux_error_log = now
+            return None
+        high_word = (body[3] << 8) | body[4]
+        low_word = (body[5] << 8) | body[6]
+        lux_value = (high_word << 16) | low_word
+        return float(lux_value)
     except Exception as exc:
-        log(f"USB lux read error: {exc}")
+        now = time.time()
+        if now - _last_lux_error_log >= 30.0:
+            log(f"USB lux read error port={USB_LUX_PORT} baud={USB_LUX_BAUD} unit={USB_LUX_UNIT_ID}: {exc}")
+            _last_lux_error_log = now
         return None
 
 
 def _lux_worker() -> None:
+    """Read JNC LUX20 continuously, reopening the USB serial link only after repeated failures."""
+    global _last_lux_error_log
+    last_broadcast_avg: Optional[float] = None
+    ser_obj = None
+    failures = 0
+    reopen_after_failures = int(os.getenv("USB_LUX_REOPEN_FAILURES", "3"))
+    poll_interval = float(os.getenv("USB_LUX_POLL_INTERVAL", "1.0"))
+    while True:
+        try:
+            if ser_obj is None or not ser_obj.is_open:
+                import serial
+                ser_obj = serial.Serial(
+                    USB_LUX_PORT,
+                    baudrate=USB_LUX_BAUD,
+                    parity="N",
+                    stopbits=1,
+                    bytesize=8,
+                    timeout=1,
+                    write_timeout=1,
+                )
+                log(f"USB lux serial-open port={USB_LUX_PORT} baud={USB_LUX_BAUD} unit={USB_LUX_UNIT_ID}")
+            lux = _read_usb_lux(ser_obj)
+        except Exception as exc:
+            lux = None
+            now_log = time.time()
+            if now_log - _last_lux_error_log >= 30.0:
+                log(f"USB lux worker error port={USB_LUX_PORT}: {exc}")
+                _last_lux_error_log = now_log
+
+        now = time.time()
+        if lux is not None:
+            failures = 0
+            _lux_samples.append((now, lux))
+        else:
+            failures += 1
+            if failures >= reopen_after_failures:
+                if ser_obj is not None:
+                    try:
+                        ser_obj.close()
+                    except Exception:
+                        pass
+                ser_obj = None
+                failures = 0
+                time.sleep(0.5)
+
+        while _lux_samples and now - _lux_samples[0][0] > LUX_WINDOW:
+            _lux_samples.popleft()
+        avg = round(sum(v for _, v in _lux_samples) / len(_lux_samples), 1) if _lux_samples else None
+        with state_lock:
+            if lux is not None:
+                state["lux_raw"] = lux
+                state["lux_last_seen"] = now
+                state["lux_failures"] = 0
+                state["lux_error"] = ""
+            elif state.get("lux_raw") is None:
+                state["lux_error"] = "USB lux no response"
+                state["lux_failures"] = state.get("lux_failures", 0) + 1
+            else:
+                state["lux_error"] = "USB lux no response; keeping last value"
+                state["lux_failures"] = state.get("lux_failures", 0) + 1
+            if avg is not None:
+                state["lux_avg"] = avg
+
+        if avg != last_broadcast_avg or lux is None:
+            last_broadcast_avg = avg
+            with state_lock:
+                pc = state.get("person_count", 0)
+            set_level_from_count(pc)
+            broadcast_state()
+        time.sleep(poll_interval)
+
     """Read JNC LUX20 every second; broadcast only when average changes by ≥1 lux."""
     last_broadcast_avg: Optional[float] = None
     while True:
@@ -1082,8 +1176,10 @@ def _lux_worker() -> None:
             _lux_samples.popleft()
         avg = round(sum(v for _, v in _lux_samples) / len(_lux_samples), 1) if _lux_samples else None
         with state_lock:
-            state["lux_raw"] = lux
-            state["lux_avg"] = avg
+            if lux is not None:
+                state["lux_raw"] = lux
+            if avg is not None:
+                state["lux_avg"] = avg
         # Only push to clients when value changes meaningfully
         if avg != last_broadcast_avg:
             last_broadcast_avg = avg

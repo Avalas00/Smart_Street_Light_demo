@@ -155,8 +155,15 @@
         }
 
         @keyframes pulse-countdown {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.6; }
+
+            0%,
+            100% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.6;
+            }
         }
 
         .stat.lux-card strong {
@@ -202,8 +209,15 @@
         }
 
         @keyframes pulse-send {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.8; }
+
+            0%,
+            100% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.8;
+            }
         }
 
         .side {
@@ -396,9 +410,11 @@
             header {
                 padding: 0 16px;
             }
+
             .stats {
                 grid-template-columns: repeat(2, 1fr);
             }
+
             .stat strong {
                 font-size: 18px;
             }
@@ -423,8 +439,9 @@
                 <div class="stat" id="countdown-stat"><span>倒數計時</span><strong id="countdown">--</strong></div>
                 <div class="stat"><span>路燈數量</span><strong id="device-count">0</strong></div>
                 <div class="stat lux-card"><span>環境照度 (lux)</span><strong id="lux-avg">--</strong></div>
-                <div class="stat"><span>Server IP</span><strong id="server-address" style="font-size: 13px;">--</strong></div>
-                <div class="stat"><span>已連線 IP</span><strong id="connected-ips" style="font-size: 13px;">--</strong></div>
+                <!-- <div class="stat"><span>Server IP</span><strong id="server-address" style="font-size: 13px;">--</strong></div> -->
+                <div class="stat"><span>已連線 IP</span><strong id="connected-ips" style="font-size: 13px;">--</strong>
+                </div>
             </div>
             <div class="stats" id="device-stats">
                 <!-- Device brightness will be inserted here dynamically -->
@@ -441,14 +458,17 @@
             <div id="manual-panel" class="panel">
                 <h2>手動調光</h2>
                 <div class="mode-toggle" style="margin-bottom: 12px; height: 36px;">
-                    <button id="ctrl-single-btn" class="active" onclick="setControlTarget('single')" style="height: 32px; font-size: 13px;">單盞</button>
-                    <button id="ctrl-group-btn" onclick="setControlTarget('group')" style="height: 32px; font-size: 13px;">群組</button>
+                    <button id="ctrl-single-btn" class="active" onclick="setControlTarget('single')"
+                        style="height: 32px; font-size: 13px;">單盞</button>
+                    <button id="ctrl-group-btn" onclick="setControlTarget('group')"
+                        style="height: 32px; font-size: 13px;">群組</button>
                 </div>
-                
+
                 <div id="single-ctrl-panel">
                     <div class="device-selector" style="margin-bottom: 12px;">
                         <label style="color: var(--muted); font-size: 13px;">選擇路燈：</label>
-                        <select id="device-select" style="background: #121619; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; font-size: 14px; width: 100%;">
+                        <select id="device-select"
+                            style="background: #121619; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; font-size: 14px; width: 100%;">
                             <!-- Options will be populated dynamically -->
                         </select>
                     </div>
@@ -457,7 +477,8 @@
                 <div id="group-ctrl-panel" style="display: none; margin-bottom: 12px;">
                     <div class="slider-row">
                         <label style="color: var(--muted); font-size: 13px;">群組編號 (0-255)：</label>
-                        <input id="ctrl-group-id" type="number" min="0" max="255" value="0" style="background: #121619; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; width: 80px;">
+                        <input id="ctrl-group-id" type="number" min="0" max="255" value="0"
+                            style="background: #121619; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; width: 80px;">
                     </div>
                 </div>
 
@@ -471,9 +492,11 @@
                 <h2>群組設定</h2>
                 <div class="slider-row" style="margin-bottom: 12px;">
                     <label style="color: var(--muted); font-size: 13px;">群組編號 (0-255)：</label>
-                    <input id="group-id-input" type="number" min="0" max="255" value="0" style="background: #121619; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; width: 80px;">
+                    <input id="group-id-input" type="number" min="0" max="255" value="0"
+                        style="background: #121619; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; width: 80px;">
                 </div>
-                <button id="set-group-btn" class="send-btn" disabled onclick="setGroup()" style="background: #2d1b4a; border-color: #7c3aed; color: #c4b5fd;">💾 設定群組</button>
+                <button id="set-group-btn" class="send-btn" disabled onclick="setGroup()"
+                    style="background: #2d1b4a; border-color: #7c3aed; color: #c4b5fd;">💾 設定群組</button>
             </div>
             <div class="panel">
                 <h2>VLM 警示</h2>
@@ -616,7 +639,7 @@
 
             if (els.deviceSelect && data.devices) {
                 const currentValue = els.deviceSelect.value;
-                els.deviceSelect.innerHTML = data.devices.map(device => 
+                els.deviceSelect.innerHTML = data.devices.map(device =>
                     `<option value="${device.id}">${escapeHtml(device.name)}</option>`
                 ).join("");
                 if (currentValue) {

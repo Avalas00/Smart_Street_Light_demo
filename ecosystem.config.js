@@ -23,6 +23,9 @@ module.exports = {
         YOLO_MODEL: "/home/lucas/Desktop/streetlight_lite_agx/models/yolo26n.pt",
         YOLO_DEVICE: "cuda:0",
         LD_LIBRARY_PATH: "/usr/local/cuda/lib64:/usr/local/cuda/targets/aarch64-linux/lib:/usr/lib/aarch64-linux-gnu",
+        USB_LUX_PORT: "/dev/ttyUSB0",
+        USB_LUX_BAUD: "9600",
+        USB_LUX_UNIT_ID: "77",
         ENABLE_VLM: "0"
       }
     }
