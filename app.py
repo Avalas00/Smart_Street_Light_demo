@@ -21,7 +21,7 @@ except Exception:
     DetectionSummary = None
     build_vlm_harness = None
 
-
+#123
 # Load devices from JSON config
 def load_devices() -> List[dict]:
     config_path = os.path.join(os.path.dirname(__file__), "devices.json")
