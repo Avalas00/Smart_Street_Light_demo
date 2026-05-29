@@ -7,93 +7,86 @@
     <title>AGX 智慧路燈精簡版</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
     <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&display=swap');
+        
         :root {
-            color-scheme: dark;
-            --bg: #0d1117;
-            --panel: #161b22;
-            --panel-2: #21262d;
-            --panel-3: #010409;
-            --text: #c9d1d9;
-            --muted: #8b949e;
-            --line: #30363d;
-            --green: #238636;
-            --amber: #d29922;
-            --red: #f85149;
-            --blue: #1f6feb;
-            --accent: #58a6ff;
+            --bg: #F5F3ED; /* Washi paper warm off-white */
+            --panel: #FFFFFF;
+            --panel-2: #FAFAFA;
+            --text: #2D3142; /* Soft navy/grey */
+            --muted: #848996;
+            --line: #E2DFD8;
+            --green: #4A7C59; /* Muted Matcha green */
+            --amber: #D49A36;
+            --red: #C5534C;
+            --blue: #5C7A99; /* Indigo blue */
+            --accent: #849F90; /* Soft celadon/matcha */
         }
 
-        * {
-            box-sizing: border-box;
-        }
+        * { box-sizing: border-box; }
 
-        html,
-        body {
-            height: 100%;
-        }
+        html, body { height: 100%; }
 
         body {
             margin: 0;
             overflow: hidden;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+            font-family: 'Noto Sans TC', -apple-system, sans-serif;
             background: var(--bg);
             color: var(--text);
-            background-image: radial-gradient(circle at top right, #161b22 0%, #0d1117 100%);
+            background-image: radial-gradient(circle at top right, #FFFFFF 0%, #F5F3ED 100%);
         }
 
         header {
-            height: 60px;
+            height: 64px;
             display: flex;
             align-items: center;
             justify-content: space-between;
-            gap: 16px;
-            padding: 0 24px;
+            padding: 0 32px;
             border-bottom: 1px solid var(--line);
-            background: rgba(1, 4, 9, 0.8);
-            backdrop-filter: blur(8px);
+            background: rgba(255, 255, 255, 0.7);
+            backdrop-filter: blur(12px);
             z-index: 100;
         }
 
         h1 {
             margin: 0;
-            font-size: 18px;
-            font-weight: 600;
-            letter-spacing: 0.5px;
-            background: linear-gradient(90deg, #58a6ff, #bc8cff);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
+            font-size: 20px;
+            font-weight: 700;
+            letter-spacing: 1px;
+            color: var(--text);
         }
 
         main {
-            height: calc(100dvh - 60px);
+            height: calc(100dvh - 64px);
             min-height: 0;
             display: grid;
-            grid-template-columns: minmax(0, 1fr) 400px;
-            gap: 16px;
-            padding: 16px;
+            grid-template-columns: minmax(0, 1fr) 420px;
+            gap: 24px;
+            padding: 24px;
         }
 
-        .stage,
-        .side {
+        .stage, .side {
             min-height: 0;
             background: var(--panel);
             border: 1px solid var(--line);
-            border-radius: 12px;
+            border-radius: 16px;
             overflow: hidden;
-            box-shadow: 0 4px 24px rgba(0, 0, 0, 0.3);
+            box-shadow: 0 8px 32px rgba(45, 49, 66, 0.04);
         }
 
         .stage {
             display: grid;
             grid-template-rows: minmax(0, 1fr) auto;
+            background: var(--panel);
         }
 
         .video-wrap {
             min-height: 0;
-            background: #000;
+            background: #EBE9E1;
             display: grid;
             place-items: center;
             position: relative;
+            border-bottom: 1px solid var(--line);
         }
 
         .video-wrap img {
@@ -101,52 +94,52 @@
             max-height: 100%;
             object-fit: contain;
             display: block;
+            border-radius: 16px 16px 0 0;
         }
 
         .stats {
             display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-            gap: 1px;
-            background: var(--line);
-            border-top: 1px solid var(--line);
+            grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); /* Allow smaller cards to fit text */
+            gap: 12px;
+            padding: 16px;
+            background: var(--panel-2);
         }
 
         .stat {
             min-width: 0;
             background: var(--panel);
-            padding: 14px;
-            transition: background 0.2s;
+            padding: 16px;
+            border-radius: 12px;
+            border: 1px solid var(--line);
+            transition: all 0.3s ease;
             display: flex;
             flex-direction: column;
             justify-content: center;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.02);
         }
 
         .stat:hover {
-            background: var(--panel-2);
+            transform: translateY(-2px);
+            box-shadow: 0 6px 16px rgba(0,0,0,0.06);
         }
 
         .stat span {
             display: block;
             color: var(--muted);
-            font-size: 11px;
+            font-size: 12px;
             font-weight: 500;
-            margin-bottom: 6px;
-            text-transform: uppercase;
+            margin-bottom: 8px;
             letter-spacing: 0.5px;
             white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
         }
 
         .stat strong {
             display: block;
-            font-size: 20px;
-            font-weight: 600;
+            font-size: 18px; /* Slightly smaller to prevent text overflow */
+            font-weight: 700;
+            color: var(--text);
             line-height: 1.2;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            color: #f0f6fc;
+            word-wrap: break-word; /* Allow wrapping for long texts like mid_pedestrian */
         }
 
         .stat.countdown-active strong {
@@ -155,69 +148,56 @@
         }
 
         @keyframes pulse-countdown {
-
-            0%,
-            100% {
-                opacity: 1;
-            }
-
-            50% {
-                opacity: 0.6;
-            }
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
         }
 
         .stat.lux-card strong {
-            color: #79c0ff;
+            color: var(--blue);
         }
 
         .lost-badge {
             display: inline-flex;
             align-items: center;
-            padding: 1px 6px;
-            border-radius: 4px;
-            background: rgba(248, 81, 73, 0.1);
-            border: 1px solid rgba(248, 81, 73, 0.4);
+            padding: 2px 8px;
+            border-radius: 6px;
+            background: rgba(197, 83, 76, 0.1);
             color: var(--red);
-            font-size: 10px;
+            font-size: 11px;
             font-weight: 600;
-            margin-left: 6px;
-            vertical-align: middle;
+            margin-left: 8px;
         }
 
         .send-btn {
             width: 100%;
-            margin-top: 12px;
-            height: 44px;
-            background: var(--blue);
-            border: 1px solid rgba(240, 246, 252, 0.1);
-            color: #fff;
-            font-size: 14px;
-            font-weight: 600;
-            border-radius: 6px;
-            transition: all 0.2s;
+            margin-top: 16px;
+            height: 48px;
+            background: var(--text);
+            color: #FFF;
+            font-size: 15px;
+            font-weight: 500;
+            border-radius: 8px;
+            border: none;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            letter-spacing: 1px;
         }
 
         .send-btn:hover:not(:disabled) {
-            background: #238cf7;
+            background: var(--blue);
             transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(92, 122, 153, 0.3);
         }
 
         .send-btn.pending {
             background: var(--amber);
-            color: #000;
-            animation: pulse-send 1.2s ease-in-out infinite;
+            color: #FFF;
+            animation: pulse-send 1.2s infinite;
         }
 
         @keyframes pulse-send {
-
-            0%,
-            100% {
-                opacity: 1;
-            }
-
-            50% {
-                opacity: 0.8;
-            }
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.8; }
         }
 
         .side {
@@ -229,20 +209,18 @@
 
         .panel {
             min-height: 0;
-            padding: 20px;
+            flex-shrink: 0; /* Prevent panel from squishing and causing overflow */
+            padding: 24px;
             border-bottom: 1px solid var(--line);
         }
 
-        .panel:last-child {
-            border-bottom: none;
-        }
+        .panel:last-child { border-bottom: none; }
 
         h2 {
-            margin: 0 0 16px;
-            font-size: 14px;
-            font-weight: 600;
-            color: var(--muted);
-            text-transform: uppercase;
+            margin: 0 0 20px;
+            font-size: 15px;
+            font-weight: 700;
+            color: var(--text);
             letter-spacing: 0.5px;
         }
 
@@ -253,66 +231,72 @@
         }
 
         button {
-            height: 40px;
+            height: 44px;
             border: 1px solid var(--line);
-            background: var(--panel-2);
-            color: var(--text);
-            border-radius: 6px;
+            background: var(--panel);
+            color: var(--muted);
+            border-radius: 8px;
             padding: 0 16px;
             font-size: 14px;
             font-weight: 500;
             cursor: pointer;
-            transition: all 0.2s;
+            transition: all 0.2s ease;
         }
 
         button:hover:not(:disabled) {
-            border-color: var(--muted);
-            background: #30363d;
+            border-color: var(--accent);
+            color: var(--accent);
         }
 
         button.active {
             border-color: var(--accent);
-            background: rgba(31, 111, 235, 0.1);
-            color: var(--accent);
+            background: var(--accent);
+            color: #FFF;
+            box-shadow: 0 4px 12px rgba(132, 159, 144, 0.25);
         }
 
         button:disabled {
-            opacity: 0.5;
+            opacity: 0.4;
             cursor: not-allowed;
         }
 
         .slider-row {
             display: grid;
             grid-template-columns: 1fr auto;
-            gap: 16px;
+            gap: 20px;
             align-items: center;
         }
 
         input[type="range"] {
             -webkit-appearance: none;
             width: 100%;
-            height: 6px;
+            height: 4px;
             background: var(--line);
-            border-radius: 3px;
+            border-radius: 2px;
             outline: none;
         }
 
         input[type="range"]::-webkit-slider-thumb {
             -webkit-appearance: none;
-            width: 18px;
-            height: 18px;
-            background: var(--accent);
+            width: 20px;
+            height: 20px;
+            background: #FFF;
             border-radius: 50%;
             cursor: pointer;
-            border: 3px solid var(--bg);
-            box-shadow: 0 0 0 1px var(--accent);
+            border: 2px solid var(--accent);
+            box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+            transition: transform 0.1s;
+        }
+        
+        input[type="range"]::-webkit-slider-thumb:hover {
+            transform: scale(1.1);
         }
 
         .value {
-            min-width: 48px;
+            min-width: 54px;
             text-align: right;
             font-size: 18px;
-            font-weight: 600;
+            font-weight: 700;
             color: var(--accent);
         }
 
@@ -321,18 +305,18 @@
             max-height: 120px;
             overflow: auto;
             border: 1px solid var(--line);
-            border-radius: 8px;
-            background: rgba(0, 0, 0, 0.2);
-            padding: 12px;
+            border-radius: 12px;
+            background: var(--panel-2);
+            padding: 16px;
             color: var(--muted);
             font-size: 13px;
             line-height: 1.6;
         }
 
         .alert.hot {
-            border-color: rgba(210, 153, 34, 0.4);
-            color: var(--amber);
-            background: rgba(210, 153, 34, 0.05);
+            border-color: var(--amber);
+            color: #B57F26;
+            background: #FDF9F1;
         }
 
         .log-panel {
@@ -346,83 +330,102 @@
             flex: 1;
             min-height: 0;
             overflow: auto;
-            background: rgba(0, 0, 0, 0.3);
+            background: #FAFAFA; /* Light background to match the theme */
+            border-radius: 12px;
+            padding: 16px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            color: #4A5568; /* Slate gray, easier to read on white */
+            line-height: 1.6;
+            box-shadow: inset 0 2px 8px rgba(0,0,0,0.02);
             border: 1px solid var(--line);
-            border-radius: 8px;
-            padding: 12px;
-            font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
-            font-size: 11px;
-            color: #7ee787;
-            line-height: 1.5;
         }
 
         .pill {
             display: inline-flex;
             align-items: center;
-            padding: 4px 12px;
-            border-radius: 20px;
+            padding: 6px 16px;
+            border-radius: 24px;
             border: 1px solid var(--line);
             color: var(--muted);
-            background: var(--panel-2);
-            font-size: 12px;
-            font-weight: 500;
+            background: var(--panel);
+            font-size: 13px;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.03);
         }
 
         .pill.ok {
-            color: #3fb950;
-            border-color: rgba(63, 185, 80, 0.4);
-            background: rgba(63, 185, 80, 0.1);
+            color: var(--green);
+            border-color: #A3C9AE;
+            background: #F0F5F1;
         }
 
         .pill.warn {
             color: var(--amber);
-            border-color: rgba(210, 153, 34, 0.4);
-            background: rgba(210, 153, 34, 0.1);
+            border-color: #EEDCA8;
+            background: #FDF9F1;
+        }
+
+        /* 超現代科技感緊急警報 - 黑底與紅色跑馬燈掃描線 */
+        #emergency-banner {
+            display: none;
+            width: 100%;
+            height: 60px;
+            align-items: center;
+            justify-content: center;
+            background: #050505; /* Deep black background */
+            color: #FF2A2A; /* Bright neon red text */
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 18px;
+            font-weight: 900;
+            letter-spacing: 4px;
+            border-bottom: 2px solid #FF0000;
+            box-shadow: 0 4px 20px rgba(255, 0, 0, 0.4);
+            z-index: 9999;
+            text-shadow: 0 0 12px rgba(255, 0, 0, 0.8);
+            position: relative;
+            overflow: hidden;
+        }
+
+        /* 跑馬燈/掃描線效果 (Marquee / Scanline effect) */
+        #emergency-banner::before {
+            content: "";
+            position: absolute;
+            top: 0; 
+            left: 0; 
+            width: 150%; /* Make the scanline much longer */
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255, 0, 0, 0.1), rgba(255, 0, 0, 0.9), rgba(255, 0, 0, 0.1), transparent);
+            animation: sci-fi-scan 2s infinite linear;
+            z-index: 0;
+        }
+        
+        #emergency-banner span {
+            z-index: 1; /* Keep text above the scanline */
+            position: relative;
+        }
+
+        @keyframes sci-fi-scan {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(100%); }
         }
 
         @media (max-width: 1200px) {
-            main {
-                grid-template-columns: 1fr 340px;
-            }
+            main { grid-template-columns: 1fr 340px; }
         }
 
         @media (max-width: 1000px) {
-            body {
-                overflow: auto;
-            }
-
-            main {
-                height: auto;
-                grid-template-columns: 1fr;
-            }
-
-            .stage {
-                grid-template-rows: auto;
-            }
-
-            .video-wrap img {
-                width: 100%;
-                height: auto;
-            }
-        }
-
-        @media (max-width: 600px) {
-            header {
-                padding: 0 16px;
-            }
-
-            .stats {
-                grid-template-columns: repeat(2, 1fr);
-            }
-
-            .stat strong {
-                font-size: 18px;
-            }
+            body { overflow: auto; }
+            main { height: auto; grid-template-columns: 1fr; }
+            .stage { grid-template-rows: auto; }
+            .video-wrap img { width: 100%; height: auto; border-radius: 16px; }
         }
     </style>
 </head>
 
 <body>
+    <div id="emergency-banner"><span>🚨 緊急按鈕已觸發！警報與繼電器輸出聯動中 🚨</span></div>
     <header>
         <h1>AGX 智慧路燈精簡版</h1>
         <div id="device-pill" class="pill warn">路燈未連線</div>
@@ -439,9 +442,8 @@
                 <div class="stat" id="countdown-stat"><span>倒數計時</span><strong id="countdown">--</strong></div>
                 <div class="stat"><span>路燈數量</span><strong id="device-count">0</strong></div>
                 <div class="stat lux-card"><span>環境照度 (lux)</span><strong id="lux-avg">--</strong></div>
-                <!-- <div class="stat"><span>Server IP</span><strong id="server-address" style="font-size: 13px;">--</strong></div> -->
-                <div class="stat"><span>已連線 IP</span><strong id="connected-ips" style="font-size: 13px;">--</strong>
-                </div>
+                <div class="stat" id="emergency-stat"><span>緊急按鈕</span><strong id="emergency-val" style="color: var(--green);">正常</strong></div>
+                <div class="stat"><span>已連線 IP</span><strong id="connected-ips" style="font-size: 13px;">--</strong></div>
             </div>
             <div class="stats" id="device-stats">
                 <!-- Device brightness will be inserted here dynamically -->
@@ -468,7 +470,7 @@
                     <div class="device-selector" style="margin-bottom: 12px;">
                         <label style="color: var(--muted); font-size: 13px;">選擇路燈：</label>
                         <select id="device-select"
-                            style="background: #121619; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; font-size: 14px; width: 100%;">
+                            style="background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; font-size: 14px; width: 100%; outline: none; cursor: pointer;">
                             <!-- Options will be populated dynamically -->
                         </select>
                     </div>
@@ -478,7 +480,7 @@
                     <div class="slider-row">
                         <label style="color: var(--muted); font-size: 13px;">群組編號 (0-255)：</label>
                         <input id="ctrl-group-id" type="number" min="0" max="255" value="0"
-                            style="background: #121619; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; width: 80px;">
+                            style="background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; width: 80px; outline: none;">
                     </div>
                 </div>
 
@@ -493,10 +495,10 @@
                 <div class="slider-row" style="margin-bottom: 12px;">
                     <label style="color: var(--muted); font-size: 13px;">群組編號 (0-255)：</label>
                     <input id="group-id-input" type="number" min="0" max="255" value="0"
-                        style="background: #121619; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; width: 80px;">
+                        style="background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; width: 80px; outline: none;">
                 </div>
                 <button id="set-group-btn" class="send-btn" disabled onclick="setGroup()"
-                    style="background: #2d1b4a; border-color: #7c3aed; color: #c4b5fd;">💾 設定群組</button>
+                    style="background: var(--text); border-color: transparent; color: #FFF;">💾 設定群組</button>
             </div>
             <div class="panel">
                 <h2>VLM 警示</h2>
@@ -538,6 +540,9 @@
             luxAvg: document.getElementById("lux-avg"),
             serverAddress: document.getElementById("server-address"),
             connectedIps: document.getElementById("connected-ips"),
+            emergencyBanner: document.getElementById("emergency-banner"),
+            emergencyStat: document.getElementById("emergency-stat"),
+            emergencyVal: document.getElementById("emergency-val"),
             brightnessData: {},  // Store device brightness data
         };
         let _pendingBrightness = null; // staged value waiting for send
@@ -629,6 +634,19 @@
             const lux = data.lux_avg;
             els.luxAvg.textContent = lux !== null && lux !== undefined ? `${lux}` : '--';
 
+            // 更新緊急按鈕狀態
+            const emergencyActive = Boolean(data.emergency_trigger);
+            if (els.emergencyBanner) {
+                els.emergencyBanner.style.display = emergencyActive ? "flex" : "none";
+            }
+            if (els.emergencyVal) {
+                els.emergencyVal.textContent = emergencyActive ? "🚨 警報中" : "正常";
+                els.emergencyVal.style.color = emergencyActive ? "var(--red)" : "var(--green)";
+            }
+            if (els.emergencyStat) {
+                els.emergencyStat.style.background = emergencyActive ? "rgba(248, 81, 73, 0.15)" : "";
+            }
+
             if (els.serverAddress) els.serverAddress.textContent = data.server_info || '--';
             if (els.connectedIps) {
                 els.connectedIps.textContent = data.clients?.length ? data.clients.join(", ") : "無連線";
@@ -656,9 +674,9 @@
                     const groupId = device.group_id ?? 0;
                     const lostBadge = isLost ? `<span class="lost-badge">失聯</span>` : '';
                     const nameStr = escapeHtml(device.name);
-                    return `<div class="stat" style="${isLost ? 'background:#1d0c0c;' : ''}">
+                    return `<div class="stat" data-device-id="${device.id}" style="${isLost ? 'background:#1d0c0c;' : ''}">
                         <span>${nameStr} (群組 ${groupId})${lostBadge}</span>
-                        <strong style="${isLost ? 'color:var(--red);' : ''}">${brightness}%</strong>
+                        <strong class="dev-brightness" style="${isLost ? 'color:var(--red);' : ''}">${brightness}%</strong>
                     </div>`;
                 }).join("");
             }
@@ -708,6 +726,26 @@
         });
 
         socket.on("state", renderState);
+        socket.on("device_brightness_update", (data) => {
+            // Instant per-device brightness update without full DOM rebuild
+            const { device_id, brightness } = data;
+            if (device_id && brightness !== undefined) {
+                // Update cached brightness data
+                els.brightnessData[device_id] = brightness;
+                // Targeted DOM update
+                const card = document.querySelector(`[data-device-id="${device_id}"]`);
+                if (card) {
+                    const strong = card.querySelector('.dev-brightness');
+                    if (strong) {
+                        strong.textContent = `${brightness}%`;
+                        // Flash animation for visual feedback
+                        strong.style.transition = 'color 0.15s';
+                        strong.style.color = 'var(--green)';
+                        setTimeout(() => { strong.style.color = ''; }, 600);
+                    }
+                }
+            }
+        });
         socket.on("packet_log", (data) => {
             const line = document.createElement("div");
             line.textContent = data.msg;

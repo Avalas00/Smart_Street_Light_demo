@@ -16,6 +16,16 @@ from flask_socketio import SocketIO
 from ultralytics import YOLO
 
 try:
+    import Jetson.GPIO as GPIO
+    HAS_GPIO = True
+except ImportError:
+    HAS_GPIO = False
+    GPIO = None
+
+PIN_IN = 22
+PIN_OUTS = [14, 16]
+
+try:
     from vlm_harness import DetectionSummary, build_vlm_harness
 except Exception:
     DetectionSummary = None
@@ -165,6 +175,7 @@ state = {
     "encode_ms": 0.0,
     "camera_fourcc": CAMERA_FOURCC,
     "camera_requested_fps": CAMERA_FPS,
+    "emergency_trigger": False,
 }
 
 # Countdown timer control
@@ -223,11 +234,12 @@ def log(message: str) -> None:
     print(line, flush=True)
     socketio.emit("packet_log", {"msg": line})
 
+#等級切換
 
 def choose_auto_level(person_count: int, lux: Optional[float]) -> LightLevel:
     """Choose the appropriate light level based on environmental lux and person count."""
     # 1. Day mode: if lux > 150, stay at L0 (standby, 0% brightness)
-    if lux is not None and lux > 500:
+    if lux is not None and lux > 150:
         return AUTO_LEVELS[0]
     
     # 2. Night mode: lux <= 150 (or sensor unavailable)
@@ -408,6 +420,10 @@ def _countdown_worker(target: LightLevel, generation: int) -> None:
 def set_level_from_count(person_count: int) -> None:
     global _auto_candidate_level, _auto_candidate_since, _countdown_generation
     with state_lock:
+        # Emergency override: skip all auto-level logic while emergency is active
+        if state.get("emergency_trigger"):
+            state["person_count"] = person_count
+            return
         current_lux = state.get("lux_avg")
         current_level_idx = state["level"]
         is_auto = state["mode"] == "auto"
@@ -542,6 +558,7 @@ def _parse_status_packet(packet: bytes, client_ip: str) -> None:
             last_cmd_t = state["device_last_command_time"].get(dev_id, 0.0)
             
         log(f"device-status ip={client_ip} cmd=0x{cmd:02X} device={matched_device['name']} brightness={brightness}")
+        socketio.emit("device_brightness_update", {"device_id": dev_id, "brightness": brightness, "cmd": f"0x{cmd:02X}"})
         if target is not None and brightness == target:
             _last_ack_time[dev_id] = now
         
@@ -559,6 +576,7 @@ def _parse_status_packet(packet: bytes, client_ip: str) -> None:
             with state_lock:
                 state["device_brightness"][dev_id] = brightness
             log(f"device-ack-update ip={client_ip} cmd=0x{cmd:02X} device={matched_device['name']} brightness={brightness}")
+            socketio.emit("device_brightness_update", {"device_id": dev_id, "brightness": brightness, "cmd": f"0x{cmd:02X}"})
         else:
             log(f"device-ack ip={client_ip} cmd=0x{cmd:02X} device={matched_device['name']}")
         if cmd == 0x57:
@@ -1044,106 +1062,60 @@ def on_send_brightness(data):
     broadcast_state()
 
 
-def _modbus_crc16(payload: bytes) -> int:
-    crc = 0xFFFF
-    for byte in payload:
-        crc ^= byte
-        for _ in range(8):
-            if crc & 1:
-                crc = (crc >> 1) ^ 0xA001
-            else:
-                crc >>= 1
-    return crc
-
-
-def _read_usb_lux(ser_obj) -> Optional[float]:
-    """Read lux from JNC LUX20 via USB RS-485 Modbus."""
-    global _last_lux_error_log
-    try:
-        request = bytes([USB_LUX_UNIT_ID, 0x03, 0x00, 0x00, 0x00, 0x02])
-        crc = _modbus_crc16(request)
-        packet = request + bytes([crc & 0xFF, (crc >> 8) & 0xFF])
-        ser_obj.reset_input_buffer()
-        ser_obj.write(packet)
-        ser_obj.flush()
-        response = ser_obj.read(9)
-        if len(response) < 9:
-            now = time.time()
-            if now - _last_lux_error_log >= 30.0:
-                log(f"USB lux no-response port={USB_LUX_PORT} baud={USB_LUX_BAUD} unit={USB_LUX_UNIT_ID}")
-                _last_lux_error_log = now
-            return None
-        body, recv_crc = response[:-2], response[-2] | (response[-1] << 8)
-        if _modbus_crc16(body) != recv_crc or body[0] != USB_LUX_UNIT_ID or body[1] != 0x03 or body[2] < 4:
-            now = time.time()
-            if now - _last_lux_error_log >= 30.0:
-                log(f"USB lux bad-response hex={response.hex().upper()}")
-                _last_lux_error_log = now
-            return None
-        high_word = (body[3] << 8) | body[4]
-        low_word = (body[5] << 8) | body[6]
-        lux_value = (high_word << 16) | low_word
-        return float(lux_value)
-    except Exception as exc:
-        now = time.time()
-        if now - _last_lux_error_log >= 30.0:
-            log(f"USB lux read error port={USB_LUX_PORT} baud={USB_LUX_BAUD} unit={USB_LUX_UNIT_ID}: {exc}")
-            _last_lux_error_log = now
-        return None
-
-
 def _lux_worker() -> None:
-    """Read JNC LUX20 continuously, reopening the USB serial link only after repeated failures."""
-    global _last_lux_error_log
+    """Read JNC LUX20 continuously via pymodbus ModbusSerialClient."""
+    from pymodbus.client import ModbusSerialClient
+    
     last_broadcast_avg: Optional[float] = None
-    ser_obj = None
-    failures = 0
-    reopen_after_failures = int(os.getenv("USB_LUX_REOPEN_FAILURES", "3"))
-    poll_interval = float(os.getenv("USB_LUX_POLL_INTERVAL", "1.0"))
+    client = None
+    
     while True:
+        lux = None
+        now = time.time()
         try:
-            if ser_obj is None or not ser_obj.is_open:
-                import serial
-                ser_obj = serial.Serial(
-                    USB_LUX_PORT,
+            if client is None or not client.connected:
+                log(f"lux-modbus-init port={USB_LUX_PORT} baud={USB_LUX_BAUD} slave={USB_LUX_UNIT_ID}")
+                client = ModbusSerialClient(
+                    port=USB_LUX_PORT,
                     baudrate=USB_LUX_BAUD,
-                    parity="N",
+                    parity='N',
                     stopbits=1,
                     bytesize=8,
-                    timeout=1,
-                    write_timeout=1,
+                    timeout=1
                 )
-                log(f"USB lux serial-open port={USB_LUX_PORT} baud={USB_LUX_BAUD} unit={USB_LUX_UNIT_ID}")
-            lux = _read_usb_lux(ser_obj)
+                client.connect()
+            
+            if client.connected:
+                response = client.read_holding_registers(address=0x0000, count=2, slave=USB_LUX_UNIT_ID)
+                if response is not None and not response.isError():
+                    high_word = response.registers[0]
+                    low_word = response.registers[1]
+                    lux = float((high_word << 16) | low_word)
+                else:
+                    err_msg = str(response) if response is not None else "Timeout"
+                    # log(f"lux-modbus-read-error: {err_msg}") # Quiet logs to avoid spam
         except Exception as exc:
-            lux = None
-            now_log = time.time()
-            if now_log - _last_lux_error_log >= 30.0:
-                log(f"USB lux worker error port={USB_LUX_PORT}: {exc}")
-                _last_lux_error_log = now_log
-
-        now = time.time()
+            log(f"lux-worker-exception: {exc}")
+            if client:
+                try:
+                    client.close()
+                except Exception:
+                    pass
+                client = None
+        
         if lux is not None:
-            failures = 0
             _lux_samples.append((now, lux))
-        else:
-            failures += 1
-            if failures >= reopen_after_failures:
-                if ser_obj is not None:
-                    try:
-                        ser_obj.close()
-                    except Exception:
-                        pass
-                ser_obj = None
-                failures = 0
-                time.sleep(0.5)
-
+        
+        # Drop samples older than the window
         while _lux_samples and now - _lux_samples[0][0] > LUX_WINDOW:
             _lux_samples.popleft()
+            
         avg = round(sum(v for _, v in _lux_samples) / len(_lux_samples), 1) if _lux_samples else None
+        
         with state_lock:
+            state["lux_raw"] = lux
+            state["lux_avg"] = avg
             if lux is not None:
-                state["lux_raw"] = lux
                 state["lux_last_seen"] = now
                 state["lux_failures"] = 0
                 state["lux_error"] = ""
@@ -1153,33 +1125,7 @@ def _lux_worker() -> None:
             else:
                 state["lux_error"] = "USB lux no response; keeping last value"
                 state["lux_failures"] = state.get("lux_failures", 0) + 1
-            if avg is not None:
-                state["lux_avg"] = avg
-
-        if avg != last_broadcast_avg or lux is None:
-            last_broadcast_avg = avg
-            with state_lock:
-                pc = state.get("person_count", 0)
-            set_level_from_count(pc)
-            broadcast_state()
-        time.sleep(poll_interval)
-
-    """Read JNC LUX20 every second; broadcast only when average changes by ≥1 lux."""
-    last_broadcast_avg: Optional[float] = None
-    while True:
-        lux = _read_usb_lux()
-        now = time.time()
-        if lux is not None:
-            _lux_samples.append((now, lux))
-        # Drop samples older than the window
-        while _lux_samples and now - _lux_samples[0][0] > LUX_WINDOW:
-            _lux_samples.popleft()
-        avg = round(sum(v for _, v in _lux_samples) / len(_lux_samples), 1) if _lux_samples else None
-        with state_lock:
-            if lux is not None:
-                state["lux_raw"] = lux
-            if avg is not None:
-                state["lux_avg"] = avg
+            
         # Only push to clients when value changes meaningfully
         if avg != last_broadcast_avg:
             last_broadcast_avg = avg
@@ -1187,6 +1133,7 @@ def _lux_worker() -> None:
                 pc = state.get("person_count", 0)
             set_level_from_count(pc)
             broadcast_state()
+            
         time.sleep(1.0)
 
 
@@ -1240,9 +1187,73 @@ def on_set_group(data):
     broadcast_state()
 
 
+def _gpio_worker() -> None:
+    """Monitor GPIO PIN_IN (22) and control PIN_OUTS (14, 16)."""
+    if not HAS_GPIO:
+        log("Jetson.GPIO is not available. GPIO monitoring is disabled.")
+        return
+
+    try:
+        GPIO.setwarnings(False)
+        GPIO.setmode(GPIO.BOARD)
+        GPIO.setup(PIN_IN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+        
+        # Setup each output pin, logging any channel failures without crashing
+        active_outs = []
+        for pin in PIN_OUTS:
+            try:
+                GPIO.setup(pin, GPIO.OUT, initial=GPIO.LOW)
+                active_outs.append(pin)
+                log(f"GPIO Pin {pin} output initialized successfully.")
+            except Exception as e:
+                log(f"GPIO Pin {pin} output setup failed (might be invalid or system-reserved): {e}")
+        
+        log(f"Jetson.GPIO initialized. Active outputs: {active_outs}")
+    except Exception as e:
+        log(f"Jetson.GPIO initialization failed: {e}")
+        return
+
+    while True:
+        try:
+            in_state = GPIO.input(PIN_IN)
+            # Active-Low: LOW means pressed/triggered
+            triggered = (in_state == GPIO.LOW)
+            
+            # Sync relay outputs with the emergency state
+            out_state = GPIO.HIGH if triggered else GPIO.LOW
+            for pin in active_outs:
+                try:
+                    GPIO.output(pin, out_state)
+                except Exception as exc:
+                    log(f"Failed to output to pin {pin}: {exc}")
+            
+            with state_lock:
+                if state.get("emergency_trigger") != triggered:
+                    state["emergency_trigger"] = triggered
+                    log(f"Emergency state changed: {triggered} (outputs={out_state})")
+                    broadcast_state()
+                    # Streetlight group linkage
+                    if triggered:
+                        # Emergency ON → force group 6 to 100% brightness
+                        send_light(100, "emergency-on", group_id=6)
+                        log("Emergency: streetlight group 6 set to 100%")
+                    else:
+                        # Emergency OFF → restore auto level brightness
+                        with state_lock:
+                            pc = state.get("person_count", 0)
+                            current_lux = state.get("lux_avg")
+                        level = choose_auto_level(pc, current_lux)
+                        send_light(level.brightness, f"emergency-off-restore L{level.level}", group_id=6)
+                        log(f"Emergency cleared: restoring group 6 to L{level.level} brightness={level.brightness}")
+        except Exception as exc:
+            log(f"GPIO-worker-loop-failed: {exc}")
+        time.sleep(0.1)
+
+
 if __name__ == "__main__":
     threading.Thread(target=start_tcp_server, daemon=True).start()
     threading.Thread(target=camera_worker, daemon=True).start()
     threading.Thread(target=_lux_worker, daemon=True).start()
     threading.Thread(target=_device_watchdog, daemon=True).start()
+    threading.Thread(target=_gpio_worker, daemon=True).start()
     socketio.run(app, host=APP_HOST, port=APP_PORT, allow_unsafe_werkzeug=True)
