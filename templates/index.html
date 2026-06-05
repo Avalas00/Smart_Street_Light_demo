@@ -590,8 +590,8 @@
         /* 超現代科技感緊急警報 - 黑底與紅色跑馬燈掃描線 */
         #emergency-banner {
             display: none;
-            width: 100%;
-            height: 60px;
+            width: 100% !important;
+            height: 64px !important;
             align-items: center;
             justify-content: center;
             background: #050505;
@@ -604,9 +604,11 @@
             letter-spacing: 4px;
             border-bottom: 2px solid #FF0000;
             box-shadow: 0 4px 20px rgba(255, 0, 0, 0.4);
-            z-index: 9999;
+            z-index: 99999 !important;
             text-shadow: 0 0 12px rgba(255, 0, 0, 0.8);
-            position: relative;
+            position: fixed !important;
+            top: 0 !important;
+            left: 0 !important;
             overflow: hidden;
         }
 
@@ -1009,14 +1011,14 @@
                 els.brightnessData = data.device_brightness;
                 data.devices.forEach(device => {
                     const isLost = data.device_lost?.[device.id] ?? false;
-                    const card = document.querySelector(`[data-device-id="${device.id}"]`);
-                    if (card) {
+                    const cards = document.querySelectorAll(`[data-device-id="${device.id}"]`);
+                    cards.forEach(card => {
                         const strong = card.querySelector('.dev-brightness');
                         if (strong) {
                             const newVal = isLost ? '--' : `${data.device_brightness[device.id] ?? 0}%`;
                             if (strong.textContent !== newVal) strong.textContent = newVal;
                         }
-                    }
+                    });
                 });
             }
 
@@ -1110,9 +1112,9 @@
             if (device_id && brightness !== undefined) {
                 // Update cached brightness data
                 els.brightnessData[device_id] = brightness;
-                // Targeted DOM update
-                const card = document.querySelector(`[data-device-id="${device_id}"]`);
-                if (card) {
+                // Targeted DOM update for all instances
+                const cards = document.querySelectorAll(`[data-device-id="${device_id}"]`);
+                cards.forEach(card => {
                     const strong = card.querySelector('.dev-brightness');
                     if (strong) {
                         strong.textContent = `${brightness}%`;
@@ -1120,7 +1122,7 @@
                         strong.style.color = 'var(--green)';
                         setTimeout(() => { strong.style.color = ''; }, 600);
                     }
-                }
+                });
             }
         });
 

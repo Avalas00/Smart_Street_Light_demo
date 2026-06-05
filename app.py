@@ -128,9 +128,10 @@ class LightLevel:
 
 AUTO_LEVELS = [
     LightLevel(0, "standby", 0),
-    LightLevel(1, "low_pedestrian", 15),
-    LightLevel(2, "mid_pedestrian", 35),
+    LightLevel(1, "low_pedestrian", 10),
+    LightLevel(2, "mid_pedestrian", 30),
     LightLevel(3, "high_pedestrian", 60),
+    LightLevel(4, "emergency", 100),
 ]
 #倒數秒數
 
@@ -248,7 +249,7 @@ def choose_auto_level(person_count: int, lux: Optional[float]) -> LightLevel:
     # 2. Night mode: lux <= 150 (or sensor unavailable)
     if person_count <= 0:
         return AUTO_LEVELS[1] # L1 (low)
-    elif person_count <= 2:
+    elif person_count <= 3:
         return AUTO_LEVELS[2] # L2 (mid)
     else:
         return AUTO_LEVELS[3] # L3 (high)
@@ -815,12 +816,21 @@ class ThreadedCamera:
         self.frames = 0
         self.last_fps_check = time.perf_counter()
         self.read_fps = 0.0
+        self.running = False
         self.thread = threading.Thread(target=self.update, daemon=True)
 
     def is_opened(self) -> bool:
         return self.capture.isOpened()
 
+    def stop(self):
+        self.running = False
+        if self.thread.is_alive():
+            self.thread.join(timeout=2.0)
+        if self.capture.isOpened():
+            self.capture.release()
+
     def start(self) -> "ThreadedCamera":
+        self.running = True
         self.thread.start()
         return self
 
@@ -834,7 +844,7 @@ class ThreadedCamera:
         )
 
     def update(self) -> None:
-        while True:
+        while self.running:
             grabbed, frame = self.capture.read()
             now = time.perf_counter()
             with self.lock:
@@ -916,7 +926,7 @@ def maybe_run_vlm(frame, summary) -> None:
 
 
 def camera_worker() -> None:
-    global latest_jpeg, latest_raw_frame
+    global latest_jpeg, latest_raw_frame, global_camera
     log(
         "loading-yolo "
         f"model={YOLO_MODEL} device={YOLO_DEVICE} "
@@ -930,6 +940,7 @@ def camera_worker() -> None:
             pass
 
     camera = ThreadedCamera(CAMERA_INDEX)
+    global_camera = camera
     if not camera.is_opened():
         log(f"camera-open-failed index={CAMERA_INDEX}")
         return
@@ -1016,6 +1027,7 @@ def camera_worker() -> None:
         if person_count != last_count:
             last_count = person_count
             set_level_from_count(person_count)
+            broadcast_state()
 
         if DetectionSummary is not None:
             summary = DetectionSummary(
@@ -1330,6 +1342,15 @@ def _gpio_worker() -> None:
                     broadcast_state()
                     # Streetlight group linkage
                     if triggered:
+                        global _countdown_generation
+                        _countdown_generation += 1
+                        state["countdown_active"] = False
+                        state["pending_level"] = None
+                        state["countdown_remaining"] = 0
+                        state["level"] = 4
+                        state["level_label"] = "emergency"
+                        state["brightness"] = 100
+                        
                         # Emergency ON → force group 6 to 100% brightness
                         send_light(100, "emergency-on", group_id=6)
                         log("Emergency: streetlight group 6 set to 100%")
@@ -1339,12 +1360,30 @@ def _gpio_worker() -> None:
                             pc = state.get("person_count", 0)
                             current_lux = state.get("lux_avg")
                         level = choose_auto_level(pc, current_lux)
+                        state["level"] = level.level
+                        state["level_label"] = level.label
+                        state["brightness"] = level.brightness
                         send_light(level.brightness, f"emergency-off-restore L{level.level}", group_id=6)
                         log(f"Emergency cleared: restoring group 6 to L{level.level} brightness={level.brightness}")
         except Exception as exc:
             log(f"GPIO-worker-loop-failed: {exc}")
         time.sleep(0.1)
 
+
+import atexit
+
+global_camera = None
+
+def cleanup():
+    if global_camera is not None:
+        global_camera.stop()
+    if USE_GPIO:
+        try:
+            GPIO.cleanup()
+        except Exception:
+            pass
+
+atexit.register(cleanup)
 
 if __name__ == "__main__":
     threading.Thread(target=start_tcp_server, daemon=True).start()
@@ -1353,4 +1392,9 @@ if __name__ == "__main__":
     threading.Thread(target=_lux_worker, daemon=True).start()
     threading.Thread(target=_device_watchdog, daemon=True).start()
     threading.Thread(target=_gpio_worker, daemon=True).start()
-    socketio.run(app, host=APP_HOST, port=APP_PORT, allow_unsafe_werkzeug=True)
+    try:
+        socketio.run(app, host=APP_HOST, port=APP_PORT, allow_unsafe_werkzeug=True)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        cleanup()
