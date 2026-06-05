@@ -132,13 +132,14 @@ AUTO_LEVELS = [
     LightLevel(2, "mid_pedestrian", 35),
     LightLevel(3, "high_pedestrian", 60),
 ]
+#倒數秒數
 
-COUNTDOWN_SECONDS = int(os.getenv("COUNTDOWN_SECONDS", "30"))
+COUNTDOWN_SECONDS = int(os.getenv("COUNTDOWN_SECONDS", "15"))
 
 
 state_lock = threading.RLock()
 state = {
-    "mode": "auto",
+    "mode": "manual",
     "person_count": 0,
     "level": AUTO_LEVELS[0].level,
     "level_label": AUTO_LEVELS[0].label,
@@ -148,6 +149,7 @@ state = {
     "devices": DEVICES,
     "device_brightness": {d["id"]: AUTO_LEVELS[0].brightness for d in DEVICES},
     "device_lost": {d["id"]: False for d in DEVICES},
+    "device_detail": {d["id"]: {} for d in DEVICES},
     "tcp_error": "",
     "last_packet_hex": "",
     "vlm_enabled": os.getenv("ENABLE_VLM", "0") == "1",
@@ -176,6 +178,7 @@ state = {
     "camera_fourcc": CAMERA_FOURCC,
     "camera_requested_fps": CAMERA_FPS,
     "emergency_trigger": False,
+    "telemetry_history": [],
 }
 
 # Countdown timer control
@@ -239,7 +242,7 @@ def log(message: str) -> None:
 def choose_auto_level(person_count: int, lux: Optional[float]) -> LightLevel:
     """Choose the appropriate light level based on environmental lux and person count."""
     # 1. Day mode: if lux > 150, stay at L0 (standby, 0% brightness)
-    if lux is not None and lux > 150:
+    if lux is not None and lux > 270:
         return AUTO_LEVELS[0]
     
     # 2. Night mode: lux <= 150 (or sensor unavailable)
@@ -346,6 +349,12 @@ def _start_retry_worker(device: dict, packet: bytes, reason: str) -> None:
     if target_ip not in active_tcp_clients:
         log(f"control-not-connected: {device['name']} target={target_ip} hex={packet_hex}")
         return
+
+    # Log 0x52 / 0x36 sent packets to history
+    # The brightness is at packet[9] for 0x52 (length 11), packet[10] for 0x36 (length 12)
+    dimming_val = packet[-2] if len(packet) > 2 else 0
+    _append_history(device["name"], packet_hex, f"0x{packet[2]:02X}", dimming_val, time.time())
+
     with _retry_lock:
         current = _retry_inflight.get(dev_id)
         if current and current.get("packet_hex") == packet_hex and current.get("active"):
@@ -353,16 +362,16 @@ def _start_retry_worker(device: dict, packet: bytes, reason: str) -> None:
             return
         token = time.time()
         _retry_inflight[dev_id] = {
+            "device": device,
+            "packet": packet,
             "packet_hex": packet_hex,
             "reason": reason,
             "token": token,
             "active": True,
+            "phase": 1,
+            "attempts": 0,
+            "next_send_time": 0.0,
         }
-    threading.Thread(
-        target=_send_retry_worker,
-        args=(device, packet, reason, token),
-        daemon=True,
-    ).start()
 
 
 def get_public_state() -> dict:
@@ -392,8 +401,11 @@ def _countdown_worker(target: LightLevel, generation: int) -> None:
                 or state["pending_level"] != target.level
                 or generation != _countdown_generation
             ):
+                # Notify frontend that countdown was cancelled
+                socketio.emit("countdown_tick", {"active": False, "remaining": 0})
                 return # Exit worker
-        broadcast_state()
+        # Lightweight per-second tick — avoids full DOM re-render on client
+        socketio.emit("countdown_tick", {"active": True, "remaining": remaining})
         time.sleep(1.0)
         remaining -= 1
 
@@ -442,15 +454,15 @@ def set_level_from_count(person_count: int) -> None:
                 broadcast_state()
             return
 
-        if _auto_candidate_level != target_level.level:
-            _auto_candidate_level = target_level.level
-            _auto_candidate_since = now
-            return
-        if now - _auto_candidate_since < AUTO_LEVEL_STABLE_SEC:
-            return
-        
-        # 1. UPGRADE Logic (target > current) -> Immediate
+        # 1. UPGRADE Logic (target > current) -> Immediate (with candidate stability)
         if target_level.level > current_level_idx:
+            # Require stable candidate for upgrades to avoid flickering
+            if _auto_candidate_level != target_level.level:
+                _auto_candidate_level = target_level.level
+                _auto_candidate_since = now
+                return
+            if now - _auto_candidate_since < AUTO_LEVEL_STABLE_SEC:
+                return
             _countdown_generation += 1
             state["countdown_active"] = False
             state["pending_level"] = None
@@ -458,6 +470,7 @@ def set_level_from_count(person_count: int) -> None:
             state["level"] = target_level.level
             state["level_label"] = target_level.label
             state["brightness"] = target_level.brightness
+            _auto_candidate_level = None  # reset after upgrade
             log(f"auto-upgrade to L{target_level.level} {target_level.label} (immediate)")
             send_light(target_level.brightness, f"upgrade-L{target_level.level}", group_id=6)
             broadcast_state()
@@ -465,6 +478,7 @@ def set_level_from_count(person_count: int) -> None:
 
         # 2. EQUAL Logic (target == current) -> Cancel any pending downgrade
         if target_level.level == current_level_idx:
+            _auto_candidate_level = None  # reset candidate when stable
             if state["countdown_active"]:
                 _countdown_generation += 1
                 state["countdown_active"] = False
@@ -474,8 +488,9 @@ def set_level_from_count(person_count: int) -> None:
                 broadcast_state()
             return
 
-        # 3. DOWNGRADE Logic (target < current) -> 30s Confirmation
+        # 3. DOWNGRADE Logic (target < current) -> 30s Confirmation (no candidate delay)
         if target_level.level < current_level_idx:
+            _auto_candidate_level = None  # reset candidate on downgrade path
             if state["pending_level"] != target_level.level:
                 # New target or restarted condition
                 _countdown_generation += 1
@@ -517,6 +532,27 @@ def start_tcp_server() -> None:
         broadcast_state()
 
 
+def _append_history(device_name: str, packet_hex: str, cmd_hex: str, brightness: int, now: float,
+                    voltage=None, current=None, active_p=None, pf=None, rssi=None):
+    hist_entry = {
+        "time": time.strftime("%H:%M:%S", time.localtime(now)),
+        "cmd": cmd_hex,
+        "name": device_name,
+        "dimming": brightness,
+        "voltage": voltage,
+        "current": current,
+        "active_p": active_p,
+        "pf": pf,
+        "rssi": rssi,
+        "raw_hex": packet_hex
+    }
+    with state_lock:
+        history = list(state.get("telemetry_history", []))
+        history.append(hist_entry)
+        if len(history) > 20:
+            history = history[-20:]
+        state["telemetry_history"] = history
+
 def _parse_status_packet(packet: bytes, client_ip: str) -> None:
     """Parse incoming packets: 0x40/0x80 status and 0x41/0x53/0x37 ACK packets."""
     if len(packet) < 3:
@@ -532,6 +568,7 @@ def _parse_status_packet(packet: bytes, client_ip: str) -> None:
         return
     mac_bytes = packet[3:8]
     device_id = mac_bytes.hex().upper()
+    packet_hex = packet.hex().upper()
     
     # Match to a known device
     matched_device = None
@@ -550,115 +587,178 @@ def _parse_status_packet(packet: bytes, client_ip: str) -> None:
     with state_lock:
         state["device_lost"][dev_id] = False
         
-    if (cmd == 0x80 and len(packet) >= 28) or (cmd == 0x40 and len(packet) >= 14):
-        brightness = packet[23] if cmd == 0x80 else packet[13]
+    if cmd == 0x80 and len(packet) >= 28:
+        # Full telemetry parse
+        serial      = packet[8]
+        rssi        = packet[9]
+        voltage     = round(((packet[10] << 8) | packet[11]) / 10.0, 1)   # V
+        current     = round(((packet[12] << 8) | packet[13]) / 100.0, 2)  # A
+        freq        = packet[14]                                            # Hz
+        pf          = round(((packet[15] << 8) | packet[16]) / 1000.0, 3) # 0-1
+        active_p    = round(((packet[17] << 8) | packet[18]) / 10.0, 1)   # W
+        apparent_p  = round(((packet[19] << 8) | packet[20]) / 10.0, 1)   # VA
+        reactive_p  = round(((packet[21] << 8) | packet[22]) / 10.0, 1)   # VAR
+        brightness  = packet[23]                                            # %
+        group       = packet[24]
+        working_min = (packet[25] << 8) | packet[26]                       # minutes
+
+        detail = {
+            "device_id":    dev_id,
+            "name":         matched_device["name"],
+            "mac":          device_id,
+            "cmd":          f"0x{cmd:02X}",
+            "serial":       serial,
+            "rssi":         rssi,
+            "voltage":      voltage,
+            "current":      current,
+            "freq":         freq,
+            "pf":           pf,
+            "active_p":     active_p,
+            "apparent_p":   apparent_p,
+            "reactive_p":   reactive_p,
+            "dimming":      brightness,
+            "group":        group,
+            "working_min":  working_min,
+            "ts":           now,
+            "telemetry_stale": False,  # Fresh 0x80 data — not stale
+        }
+        # Add to telemetry history
+        _append_history(matched_device["name"], packet_hex, f"0x{cmd:02X}", brightness, now,
+                        voltage, current, active_p, pf, rssi)
+
+        with state_lock:
+            state["device_brightness"][dev_id] = brightness
+            state["device_detail"][dev_id] = detail
+            
+            target = state["device_target_brightness"].get(dev_id)
+            last_cmd_t = state["device_last_command_time"].get(dev_id, 0.0)
+
+        log(f"device-status ip={client_ip} cmd=0x{cmd:02X} device={matched_device['name']} brightness={brightness}")
+        socketio.emit("device_brightness_update", {"device_id": dev_id, "brightness": brightness, "cmd": f"0x{cmd:02X}"})
+        socketio.emit("device_detail_update", detail)
+
+        if target is not None and brightness == target:
+            _last_ack_time[dev_id] = now
+
+        # Inconsistency check
+        if target is not None and brightness != target:
+            if now - last_cmd_t > 10.0:
+                log(f"consistency-sync: {matched_device['name']} reported={brightness} target={target}. Re-sending...")
+                send_light(target, "consistency-sync", target_device=matched_device)
+
+    elif cmd == 0x40 and len(packet) >= 14:
+        brightness = packet[13]
+        _append_history(matched_device["name"], packet_hex, f"0x{cmd:02X}", brightness, now)
         with state_lock:
             state["device_brightness"][dev_id] = brightness
             target = state["device_target_brightness"].get(dev_id)
             last_cmd_t = state["device_last_command_time"].get(dev_id, 0.0)
-            
+            # Sync dimming into device_detail and mark telemetry as stale
+            # (power/voltage values are from the previous 0x80 packet)
+            if dev_id in state["device_detail"] and state["device_detail"][dev_id]:
+                state["device_detail"][dev_id]["dimming"] = brightness
+                state["device_detail"][dev_id]["telemetry_stale"] = True
+
         log(f"device-status ip={client_ip} cmd=0x{cmd:02X} device={matched_device['name']} brightness={brightness}")
         socketio.emit("device_brightness_update", {"device_id": dev_id, "brightness": brightness, "cmd": f"0x{cmd:02X}"})
         if target is not None and brightness == target:
             _last_ack_time[dev_id] = now
-        
-        # Inconsistency check: if reported != target and > 10s since last command
         if target is not None and brightness != target:
             if now - last_cmd_t > 10.0:
                 log(f"consistency-sync: {matched_device['name']} reported={brightness} target={target}. Re-sending...")
-                # Re-send for this specific device
                 send_light(target, "consistency-sync", target_device=matched_device)
     elif cmd in (0x41, 0x53, 0x37):
         _last_ack_time[dev_id] = now
-        # Extract brightness from byte 14 (index 13) for 0x53/0x37
+
         if len(packet) >= 14:
+            # For 0x41, 0x53, 0x37, brightness is at index 13
             brightness = packet[13]
+            _append_history(matched_device["name"], packet_hex, f"0x{cmd:02X}", brightness, now)
             with state_lock:
                 state["device_brightness"][dev_id] = brightness
-            log(f"device-ack-update ip={client_ip} cmd=0x{cmd:02X} device={matched_device['name']} brightness={brightness}")
+                target = state["device_target_brightness"].get(dev_id)
+                last_cmd_t = state["device_last_command_time"].get(dev_id, 0.0)
+                if dev_id in state["device_detail"] and state["device_detail"][dev_id]:
+                    state["device_detail"][dev_id]["dimming"] = brightness
+                    state["device_detail"][dev_id]["telemetry_stale"] = True
+
+            log(f"device-ack-update ip={client_ip} cmd=0x{cmd:02X} device={matched_device['name']} brightness={brightness}%")
             socketio.emit("device_brightness_update", {"device_id": dev_id, "brightness": brightness, "cmd": f"0x{cmd:02X}"})
+
+            if target is not None and brightness == target:
+                _last_ack_time[dev_id] = now
+            if target is not None and brightness != target:
+                if now - last_cmd_t > 10.0:
+                    log(f"consistency-sync: {matched_device['name']} reported={brightness} target={target}. Re-sending...")
+                    g_id = matched_device.get("group_id")
+                    if g_id is not None:
+                        send_light(target, "consistency-sync", group_id=g_id)
+                    else:
+                        send_light(target, "consistency-sync", target_device=matched_device)
         else:
             log(f"device-ack ip={client_ip} cmd=0x{cmd:02X} device={matched_device['name']}")
-        if cmd == 0x57:
-             # If group set ACK, we could log the new group
-             pass
     else:
         log(f"device-rx-unhandled ip={client_ip} cmd=0x{cmd:02X} device={matched_device['name']} hex={packet_hex}")
         
     broadcast_state()
 
 
-def _send_retry_worker(device: dict, packet: bytes, reason: str, token: float) -> None:
-    """Threaded worker for the new retry logic: 2s*3 -> 5s wait -> 5s*3."""
-    dev_id = device["id"]
-    target_ip = device["ip"]
-    packet_hex = packet.hex().upper()
-
-    def is_current() -> bool:
+def _central_retry_worker() -> None:
+    """Central polling worker for sending retries continuously without blocking."""
+    while True:
+        now = time.time()
+        to_send = []
         with _retry_lock:
-            current = _retry_inflight.get(dev_id)
-            return bool(
-                current
-                and current.get("token") == token
-                and current.get("packet_hex") == packet_hex
-                and current.get("active")
-            )
-
-    def finish(active: bool = False) -> None:
-        with _retry_lock:
-            current = _retry_inflight.get(dev_id)
-            if current and current.get("token") == token:
-                if active:
-                    current["active"] = True
-                else:
+            for dev_id, item in list(_retry_inflight.items()):
+                if not item.get("active"):
+                    continue
+                
+                device = item["device"]
+                
+                # Check if acked
+                if _last_ack_time.get(dev_id, 0) >= item["token"]:
+                    log(f"retry-success: {device['name']} acknowledged in p{item['phase']}")
                     _retry_inflight.pop(dev_id, None)
-    
-    def try_send():
-        conn = active_tcp_clients.get(target_ip)
-        if conn:
-            try:
-                conn.sendall(packet)
-                return True
-            except Exception:
-                return False
-        return False
+                    continue
 
-    # Phase 1: 3 attempts, 2 seconds apart
-    for i in range(3):
-        if not is_current():
-            return
-        send_ts = time.time()
-        log(f"retry-p1: {device['name']} hex={packet_hex}")
-        try_send()
-        # Wait 2 seconds for reply before next attempt or phase
-        time.sleep(2.0)
-        if _last_ack_time.get(dev_id, 0) >= send_ts:
-            log(f"retry-success: {device['name']} acknowledged in p1")
-            finish()
-            return
+                if item["phase"] == 1:
+                    if item["attempts"] >= 3:
+                        log(f"retry-p2-wait: phase 1 failed, waiting 5s for {device['name']}")
+                        item["phase"] = 2
+                        item["next_send_time"] = now + 5.0
+                        item["attempts"] = 0
+                        continue
+                    if now >= item["next_send_time"]:
+                        to_send.append(item)
+                        item["attempts"] += 1
+                        item["next_send_time"] = now + 2.0
+                        
+                elif item["phase"] == 2:
+                    if item["attempts"] >= 3:
+                        log(f"retry-exhausted: {device['name']} failed to acknowledge after all attempts")
+                        _retry_inflight.pop(dev_id, None)
+                        continue
+                    if now >= item["next_send_time"]:
+                        to_send.append(item)
+                        item["attempts"] += 1
+                        item["next_send_time"] = now + 5.0
 
-    # Wait 5 seconds after Phase 1 fails
-    if not is_current():
-        return
-    log(f"retry-p2-wait: phase 1 failed, waiting 5s for {device['name']}")
-    time.sleep(5.0)
+        for item in to_send:
+            device = item["device"]
+            packet = item["packet"]
+            hex_str = packet.hex().upper()
+            target_ip = device["ip"]
+            log(f"retry-p{item['phase']}: {device['name']} hex={hex_str}")
+            
+            conn = active_tcp_clients.get(target_ip)
+            if conn:
+                try:
+                    conn.sendall(packet)
+                except Exception:
+                    pass
+            time.sleep(0.05)
 
-    # Phase 2: 3 attempts, 5 seconds apart
-    for i in range(3):
-        if not is_current():
-            return
-        send_ts = time.time()
-        log(f"retry-p2: {device['name']} hex={packet_hex}")
-        try_send()
-        time.sleep(5.0)
-        if _last_ack_time.get(dev_id, 0) >= send_ts:
-            log(f"retry-success: {device['name']} acknowledged in p2")
-            finish()
-            return
-
-    log(f"retry-exhausted: {device['name']} failed to acknowledge after all attempts")
-    finish()
-    _drop_tcp_client(target_ip, "retry-exhausted")
+        time.sleep(0.1)
 
 
 def handle_tcp_client(conn: socket.socket, client_ip: str) -> None:
@@ -1179,11 +1279,7 @@ def on_set_group(data):
         save_devices(DEVICES)
         packet = build_group_set_packet(device_id, group_id)
         log(f"set-group device={target_device['name']} group={group_id}")
-        threading.Thread(
-            target=_send_retry_worker, 
-            args=(target_device, packet, "set-group"), 
-            daemon=True
-        ).start()
+        _start_retry_worker(target_device, packet, "set-group")
     broadcast_state()
 
 
@@ -1252,6 +1348,7 @@ def _gpio_worker() -> None:
 
 if __name__ == "__main__":
     threading.Thread(target=start_tcp_server, daemon=True).start()
+    threading.Thread(target=_central_retry_worker, daemon=True).start()
     threading.Thread(target=camera_worker, daemon=True).start()
     threading.Thread(target=_lux_worker, daemon=True).start()
     threading.Thread(target=_device_watchdog, daemon=True).start()

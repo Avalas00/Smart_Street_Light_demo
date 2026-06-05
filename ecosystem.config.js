@@ -5,7 +5,7 @@ module.exports = {
       cwd: "/home/lucas/Desktop/streetlight_lite_agx",
       script: "app.py",
       interpreter: "/home/lucas/Desktop/streetlight_lite_agx/.venv/bin/python",
-      autorestart: true,
+      autorestart: false,
       watch: false,
       max_restarts: 10,
       env: {

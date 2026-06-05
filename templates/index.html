@@ -8,24 +8,34 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&display=swap');
-        
+
         :root {
-            --bg: #F5F3ED; /* Washi paper warm off-white */
+            --bg: #F5F3ED;
+            /* Washi paper warm off-white */
             --panel: #FFFFFF;
             --panel-2: #FAFAFA;
-            --text: #2D3142; /* Soft navy/grey */
+            --text: #2D3142;
+            /* Soft navy/grey */
             --muted: #848996;
             --line: #E2DFD8;
-            --green: #4A7C59; /* Muted Matcha green */
+            --green: #4A7C59;
+            /* Muted Matcha green */
             --amber: #D49A36;
             --red: #C5534C;
-            --blue: #5C7A99; /* Indigo blue */
-            --accent: #849F90; /* Soft celadon/matcha */
+            --blue: #5C7A99;
+            /* Indigo blue */
+            --accent: #849F90;
+            /* Soft celadon/matcha */
         }
 
-        * { box-sizing: border-box; }
+        * {
+            box-sizing: border-box;
+        }
 
-        html, body { height: 100%; }
+        html,
+        body {
+            height: 100%;
+        }
 
         body {
             margin: 0;
@@ -63,9 +73,83 @@
             grid-template-columns: minmax(0, 1fr) 420px;
             gap: 24px;
             padding: 24px;
+            padding-left: 32px;
         }
 
-        .stage, .side {
+        .nav-sidebar {
+            position: fixed;
+            left: 0;
+            top: 88px;
+            width: 200px;
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(12px);
+            border: 1px solid var(--line);
+            border-left: none;
+            border-radius: 0 16px 16px 0;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            box-shadow: 4px 0 24px rgba(0, 0, 0, 0.08);
+            transform: translateX(calc(-100% + 12px));
+            transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            z-index: 1000;
+        }
+
+        .nav-sidebar::after {
+            content: "";
+            position: absolute;
+            right: 4px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 4px;
+            height: 40px;
+            background: var(--line);
+            border-radius: 4px;
+            transition: opacity 0.2s;
+        }
+
+        .nav-sidebar:hover {
+            transform: translateX(0);
+        }
+
+        .nav-sidebar:hover::after {
+            opacity: 0;
+        }
+
+        .nav-item {
+            padding: 12px 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            color: var(--muted);
+            transition: all 0.2s;
+        }
+
+        .nav-item:hover {
+            background: var(--panel-2);
+            color: var(--text);
+        }
+
+        .nav-item.active {
+            background: var(--accent);
+            color: white;
+        }
+
+        #page-device {
+            display: none;
+        }
+
+        #page-device.active {
+            display: contents;
+        }
+
+        #page-device .stage {
+            grid-column: 1 / -1;
+        }
+
+        .stage,
+        .side {
             min-height: 0;
             background: var(--panel);
             border: 1px solid var(--line);
@@ -99,7 +183,8 @@
 
         .stats {
             display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); /* Allow smaller cards to fit text */
+            grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+            /* Allow smaller cards to fit text */
             gap: 12px;
             padding: 16px;
             background: var(--panel-2);
@@ -115,12 +200,12 @@
             display: flex;
             flex-direction: column;
             justify-content: center;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.02);
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.02);
         }
 
         .stat:hover {
             transform: translateY(-2px);
-            box-shadow: 0 6px 16px rgba(0,0,0,0.06);
+            box-shadow: 0 6px 16px rgba(0, 0, 0, 0.06);
         }
 
         .stat span {
@@ -135,11 +220,15 @@
 
         .stat strong {
             display: block;
-            font-size: 18px; /* Slightly smaller to prevent text overflow */
+            font-size: 18px;
             font-weight: 700;
             color: var(--text);
             line-height: 1.2;
-            word-wrap: break-word; /* Allow wrapping for long texts like mid_pedestrian */
+            height: 1.2em;
+            /* fixed single-line height */
+            overflow: hidden;
+            white-space: nowrap;
+            text-overflow: ellipsis;
         }
 
         .stat.countdown-active strong {
@@ -148,12 +237,118 @@
         }
 
         @keyframes pulse-countdown {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
+
+            0%,
+            100% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.5;
+            }
         }
 
         .stat.lux-card strong {
             color: var(--blue);
+        }
+
+        /* ── Device detail telemetry cards ─────────────────────────── */
+        #device-detail-section {
+            padding: 0 16px 16px;
+            background: var(--panel-2);
+        }
+
+        .detail-card {
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: 12px;
+            padding: 14px 16px;
+            margin-bottom: 10px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.03);
+            transition: box-shadow 0.2s;
+        }
+
+        .detail-card:hover {
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.07);
+        }
+
+        .detail-card-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 10px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid var(--line);
+        }
+
+        .detail-card-header .dc-name {
+            font-weight: 700;
+            font-size: 14px;
+            color: var(--text);
+            flex: 1;
+        }
+
+        .detail-card-header .dc-mac {
+            font-family: 'Courier New', monospace;
+            font-size: 11px;
+            color: var(--muted);
+            letter-spacing: 1px;
+        }
+
+        .detail-card-header .dc-cmd {
+            font-size: 11px;
+            font-weight: 600;
+            padding: 2px 8px;
+            border-radius: 6px;
+            background: rgba(92, 122, 153, 0.1);
+            color: var(--blue);
+        }
+
+        .detail-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+            gap: 8px;
+        }
+
+        .detail-item {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .detail-item .di-label {
+            font-size: 10px;
+            color: var(--muted);
+            font-weight: 500;
+            letter-spacing: 0.4px;
+            white-space: nowrap;
+        }
+
+        .detail-item .di-value {
+            font-size: 15px;
+            font-weight: 700;
+            color: var(--text);
+            transition: color 0.3s;
+        }
+
+        .detail-item .di-value.flash {
+            color: var(--green);
+        }
+
+        .detail-item .di-value.val-voltage {
+            color: var(--amber);
+        }
+
+        .detail-item .di-value.val-power {
+            color: var(--blue);
+        }
+
+        .detail-item .di-value.val-dim {
+            color: var(--accent);
+        }
+
+        .detail-item .di-value.val-lux {
+            color: #A07850;
         }
 
         .lost-badge {
@@ -166,6 +361,19 @@
             font-size: 11px;
             font-weight: 600;
             margin-left: 8px;
+        }
+
+        .stale-badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 1px 5px;
+            border-radius: 4px;
+            background: rgba(212, 154, 54, 0.12);
+            color: var(--amber);
+            font-size: 10px;
+            font-weight: 600;
+            margin-left: 4px;
+            vertical-align: middle;
         }
 
         .send-btn {
@@ -196,8 +404,15 @@
         }
 
         @keyframes pulse-send {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.8; }
+
+            0%,
+            100% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.8;
+            }
         }
 
         .side {
@@ -209,12 +424,15 @@
 
         .panel {
             min-height: 0;
-            flex-shrink: 0; /* Prevent panel from squishing and causing overflow */
+            flex-shrink: 0;
+            /* Prevent panel from squishing and causing overflow */
             padding: 24px;
             border-bottom: 1px solid var(--line);
         }
 
-        .panel:last-child { border-bottom: none; }
+        .panel:last-child {
+            border-bottom: none;
+        }
 
         h2 {
             margin: 0 0 20px;
@@ -284,10 +502,10 @@
             border-radius: 50%;
             cursor: pointer;
             border: 2px solid var(--accent);
-            box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
             transition: transform 0.1s;
         }
-        
+
         input[type="range"]::-webkit-slider-thumb:hover {
             transform: scale(1.1);
         }
@@ -330,14 +548,16 @@
             flex: 1;
             min-height: 0;
             overflow: auto;
-            background: #FAFAFA; /* Light background to match the theme */
+            background: #FAFAFA;
+            /* Light background to match the theme */
             border-radius: 12px;
             padding: 16px;
             font-family: 'Courier New', monospace;
             font-size: 12px;
-            color: #4A5568; /* Slate gray, easier to read on white */
+            color: #4A5568;
+            /* Slate gray, easier to read on white */
             line-height: 1.6;
-            box-shadow: inset 0 2px 8px rgba(0,0,0,0.02);
+            box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.02);
             border: 1px solid var(--line);
         }
 
@@ -352,7 +572,7 @@
             font-size: 13px;
             font-weight: 600;
             letter-spacing: 0.5px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.03);
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.03);
         }
 
         .pill.ok {
@@ -374,8 +594,10 @@
             height: 60px;
             align-items: center;
             justify-content: center;
-            background: #050505; /* Deep black background */
-            color: #FF2A2A; /* Bright neon red text */
+            background: #050505;
+            /* Deep black background */
+            color: #FF2A2A;
+            /* Bright neon red text */
             font-family: 'Courier New', Courier, monospace;
             font-size: 18px;
             font-weight: 900;
@@ -392,34 +614,57 @@
         #emergency-banner::before {
             content: "";
             position: absolute;
-            top: 0; 
-            left: 0; 
-            width: 150%; /* Make the scanline much longer */
+            top: 0;
+            left: 0;
+            width: 150%;
+            /* Make the scanline much longer */
             height: 100%;
             background: linear-gradient(90deg, transparent, rgba(255, 0, 0, 0.1), rgba(255, 0, 0, 0.9), rgba(255, 0, 0, 0.1), transparent);
             animation: sci-fi-scan 2s infinite linear;
             z-index: 0;
         }
-        
+
         #emergency-banner span {
-            z-index: 1; /* Keep text above the scanline */
+            z-index: 1;
+            /* Keep text above the scanline */
             position: relative;
         }
 
         @keyframes sci-fi-scan {
-            0% { transform: translateX(-100%); }
-            100% { transform: translateX(100%); }
+            0% {
+                transform: translateX(-100%);
+            }
+
+            100% {
+                transform: translateX(100%);
+            }
         }
 
         @media (max-width: 1200px) {
-            main { grid-template-columns: 1fr 340px; }
+            main {
+                grid-template-columns: 1fr 340px;
+            }
         }
 
         @media (max-width: 1000px) {
-            body { overflow: auto; }
-            main { height: auto; grid-template-columns: 1fr; }
-            .stage { grid-template-rows: auto; }
-            .video-wrap img { width: 100%; height: auto; border-radius: 16px; }
+            body {
+                overflow: auto;
+            }
+
+            main {
+                height: auto;
+                grid-template-columns: 1fr;
+            }
+
+            .stage {
+                grid-template-rows: auto;
+            }
+
+            .video-wrap img {
+                width: 100%;
+                height: auto;
+                border-radius: 16px;
+            }
         }
     </style>
 </head>
@@ -431,6 +676,12 @@
         <div id="device-pill" class="pill warn">路燈未連線</div>
     </header>
     <main>
+        <nav class="nav-sidebar">
+            <div id="nav-home" class="nav-item active" onclick="switchTab('home')">🏠 首頁</div>
+            <div id="nav-device" class="nav-item" onclick="switchTab('device')">📊 設備狀態</div>
+        </nav>
+        
+        <div id="page-home" style="display: contents;">
         <section class="stage">
             <div class="video-wrap">
                 <img src="/video_feed" alt="YOLO 即時辨識畫面">
@@ -442,8 +693,10 @@
                 <div class="stat" id="countdown-stat"><span>倒數計時</span><strong id="countdown">--</strong></div>
                 <div class="stat"><span>路燈數量</span><strong id="device-count">0</strong></div>
                 <div class="stat lux-card"><span>環境照度 (lux)</span><strong id="lux-avg">--</strong></div>
-                <div class="stat" id="emergency-stat"><span>緊急按鈕</span><strong id="emergency-val" style="color: var(--green);">正常</strong></div>
-                <div class="stat"><span>已連線 IP</span><strong id="connected-ips" style="font-size: 13px;">--</strong></div>
+                <div class="stat" id="emergency-stat"><span>緊急按鈕</span><strong id="emergency-val"
+                        style="color: var(--green);">正常</strong></div>
+                <div class="stat"><span>已連線 IP</span><strong id="connected-ips" style="font-size: 13px;">--</strong>
+                </div>
             </div>
             <div class="stats" id="device-stats">
                 <!-- Device brightness will be inserted here dynamically -->
@@ -509,6 +762,44 @@
                 <div id="log" class="log"></div>
             </div>
         </aside>
+        </div>
+
+        <div id="page-device" class="active">
+            <section class="stage" style="padding: 24px; overflow-y: auto;">
+                <h1 style="margin-bottom: 20px;">設備狀態詳細資訊</h1>
+                
+                <!-- ── Device telemetry detail section ── -->
+                <div id="device-detail-section" style="padding: 0; background: transparent; display: grid; gap: 16px;"></div>
+
+                <!-- ── Telemetry history section ── -->
+                <div class="panel" style="margin-top: 32px; padding: 0; border: none;">
+                    <h2>過往遙測與控制記錄 (0x80/0x37/0x53/0x52/0x36)</h2>
+                    <div style="overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.03);">
+                        <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 13px;">
+                            <thead>
+                                <tr style="border-bottom: 2px solid var(--line); color: var(--muted); font-weight: 600;">
+                                    <th style="padding: 10px 8px; text-align: center;">封包</th>
+                                    <th style="padding: 10px 8px;">時間</th>
+                                    <th style="padding: 10px 8px;">設備名稱</th>
+                                    <th style="padding: 10px 8px; text-align: center;">亮度</th>
+                                    <th style="padding: 10px 8px; text-align: right;">電壓 (V)</th>
+                                    <th style="padding: 10px 8px; text-align: right;">電流 (A)</th>
+                                    <th style="padding: 10px 8px; text-align: right;">功率 (W)</th>
+                                    <th style="padding: 10px 8px; text-align: center;">PF</th>
+                                    <th style="padding: 10px 8px; text-align: center;">RSSI</th>
+                                    <th style="padding: 10px 8px;">原始封包 (Hex)</th>
+                                </tr>
+                            </thead>
+                            <tbody id="telemetry-history-body" style="color: var(--text);">
+                                <tr id="no-telemetry-row">
+                                    <td colspan="10" style="padding: 20px; text-align: center; color: var(--muted);">暫無遙測歷史記錄</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+        </div>
     </main>
     <script>
         const socket = io();
@@ -545,6 +836,23 @@
             emergencyVal: document.getElementById("emergency-val"),
             brightnessData: {},  // Store device brightness data
         };
+
+        function switchTab(tabId) {
+            document.getElementById('nav-home').classList.toggle('active', tabId === 'home');
+            document.getElementById('nav-device').classList.toggle('active', tabId === 'device');
+            
+            if (tabId === 'home') {
+                document.getElementById('page-home').style.display = 'contents';
+                document.getElementById('page-device').classList.remove('active');
+            } else {
+                document.getElementById('page-home').style.display = 'none';
+                document.getElementById('page-device').classList.add('active');
+            }
+        }
+        
+        // Initialize to home
+        switchTab('home');
+
         let _pendingBrightness = null; // staged value waiting for send
         let _ctrlTarget = 'single';
 
@@ -608,12 +916,16 @@
             els.vlmAlert.textContent = `[${risk}] ${type}${msg}`;
         }
 
-        function renderState(data) {
-            els.people.textContent = data.person_count ?? 0;
-            els.level.textContent = `L${data.level ?? 0}`;
+        // Track last known device list hash to avoid rebuilding DOM unnecessarily
+        let _lastDeviceHash = '';
+        let _lastLogCount = 0;
 
-            const cdActive = Boolean(data.countdown_active);
-            const cdRemain = data.countdown_remaining ?? 0;
+        function _deviceHash(devices) {
+            if (!devices) return '';
+            return devices.map(d => `${d.id}:${d.group_id ?? 0}:${d.enabled}`).join('|');
+        }
+
+        function renderCountdown(cdActive, cdRemain) {
             if (cdActive && cdRemain > 0) {
                 els.countdown.textContent = `${cdRemain}s`;
                 els.countdownStat.classList.add("countdown-active");
@@ -621,6 +933,17 @@
             } else {
                 els.countdown.textContent = "--";
                 els.countdownStat.classList.remove("countdown-active");
+            }
+        }
+
+        function renderState(data) {
+            els.people.textContent = data.person_count ?? 0;
+            els.level.textContent = `L${data.level ?? 0}`;
+
+            const cdActive = Boolean(data.countdown_active);
+            const cdRemain = data.countdown_remaining ?? 0;
+            renderCountdown(cdActive, cdRemain);
+            if (!cdActive) {
                 els.levelLabel.textContent = data.level_label || "standby";
             }
 
@@ -655,30 +978,46 @@
             const deviceCount = data.devices?.length ?? 0;
             els.deviceCount.textContent = deviceCount;
 
-            if (els.deviceSelect && data.devices) {
-                const currentValue = els.deviceSelect.value;
-                els.deviceSelect.innerHTML = data.devices.map(device =>
-                    `<option value="${device.id}">${escapeHtml(device.name)}</option>`
-                ).join("");
-                if (currentValue) {
-                    els.deviceSelect.value = currentValue;
-                }
-            }
+            // Only rebuild device select & stats when device list actually changes
+            const newHash = _deviceHash(data.devices);
+            if (newHash !== _lastDeviceHash) {
+                _lastDeviceHash = newHash;
 
-            const deviceStats = document.getElementById("device-stats");
-            if (deviceStats && data.devices && data.device_brightness) {
+                if (els.deviceSelect && data.devices) {
+                    const currentValue = els.deviceSelect.value;
+                    els.deviceSelect.innerHTML = data.devices.map(device =>
+                        `<option value="${device.id}">${escapeHtml(device.name)}</option>`
+                    ).join("");
+                    if (currentValue) els.deviceSelect.value = currentValue;
+                }
+
+                const deviceStats = document.getElementById("device-stats");
+                if (deviceStats && data.devices) {
+                    deviceStats.innerHTML = data.devices.map(device => {
+                        const isLost = data.device_lost?.[device.id] ?? false;
+                        const brightness = isLost ? '--' : (data.device_brightness?.[device.id] ?? 0);
+                        const groupId = device.group_id ?? 0;
+                        const lostBadge = isLost ? `<span class="lost-badge">失聯</span>` : '';
+                        return `<div class="stat" data-device-id="${device.id}" style="${isLost ? 'background:#1d0c0c;' : ''}">
+                            <span>${escapeHtml(device.name)} (群組 ${groupId})${lostBadge}</span>
+                            <strong class="dev-brightness" style="${isLost ? 'color:var(--red);' : ''}">${brightness}%</strong>
+                        </div>`;
+                    }).join("");
+                }
+            } else if (data.devices && data.device_brightness) {
+                // Device list unchanged — only patch brightness values in-place
                 els.brightnessData = data.device_brightness;
-                deviceStats.innerHTML = data.devices.map(device => {
+                data.devices.forEach(device => {
                     const isLost = data.device_lost?.[device.id] ?? false;
-                    const brightness = isLost ? '--' : (data.device_brightness[device.id] ?? 0);
-                    const groupId = device.group_id ?? 0;
-                    const lostBadge = isLost ? `<span class="lost-badge">失聯</span>` : '';
-                    const nameStr = escapeHtml(device.name);
-                    return `<div class="stat" data-device-id="${device.id}" style="${isLost ? 'background:#1d0c0c;' : ''}">
-                        <span>${nameStr} (群組 ${groupId})${lostBadge}</span>
-                        <strong class="dev-brightness" style="${isLost ? 'color:var(--red);' : ''}">${brightness}%</strong>
-                    </div>`;
-                }).join("");
+                    const card = document.querySelector(`[data-device-id="${device.id}"]`);
+                    if (card) {
+                        const strong = card.querySelector('.dev-brightness');
+                        if (strong) {
+                            const newVal = isLost ? '--' : `${data.device_brightness[device.id] ?? 0}%`;
+                            if (strong.textContent !== newVal) strong.textContent = newVal;
+                        }
+                    }
+                });
             }
 
             const connected = Boolean(data.device_connected);
@@ -687,9 +1026,44 @@
                 ? "TCP 未啟動"
                 : (connected ? `路燈已連線 ${data.device_ip}` : `等待路燈 ${data.device_ip}`);
 
-            if (Array.isArray(data.logs)) {
-                els.log.innerHTML = data.logs.map((line) => `<div>${escapeHtml(line)}</div>`).join("");
-                els.log.scrollTop = els.log.scrollHeight;
+            // Only rebuild logs when count changes (packet_log event handles appending)
+            if (Array.isArray(data.logs) && data.logs.length !== _lastLogCount) {
+                _lastLogCount = data.logs.length;
+                els.log.innerHTML = "";
+                data.logs.forEach(line => appendLogLine(line));
+            }
+
+            // Render telemetry history
+            const historyBody = document.getElementById("telemetry-history-body");
+            if (historyBody && Array.isArray(data.telemetry_history)) {
+                if (data.telemetry_history.length === 0) {
+                    historyBody.innerHTML = `
+                        <tr id="no-telemetry-row">
+                            <td colspan="10" style="padding: 20px; text-align: center; color: var(--muted);">暫無遙測歷史記錄</td>
+                        </tr>`;
+                } else {
+                    historyBody.innerHTML = data.telemetry_history.slice().reverse().map(h => {
+                        const fmt = (v) => v != null ? v : '--';
+                        let cmdStyle = 'background: var(--line); color: var(--text);';
+                        if (h.cmd === '0x80') cmdStyle = 'background: rgba(33,150,243,0.1); color: #1e88e5;';
+                        if (h.cmd === '0x52' || h.cmd === '0x36') cmdStyle = 'background: rgba(76,175,80,0.1); color: #43a047; border: 1px solid rgba(76,175,80,0.3);';
+                        if (h.cmd === '0x53' || h.cmd === '0x37' || h.cmd === '0x41') cmdStyle = 'background: rgba(255,152,0,0.1); color: #f57c00;';
+                        
+                        return `
+                            <tr style="border-bottom: 1px solid var(--line);">
+                                <td style="padding: 10px 8px; text-align: center;"><span style="padding: 2px 6px; border-radius: 4px; font-weight: 600; font-size: 11px; ${cmdStyle}">${fmt(h.cmd)}</span></td>
+                                <td style="padding: 10px 8px; font-family: monospace;">${fmt(h.time)}</td>
+                                <td style="padding: 10px 8px; font-weight: 500;">${escapeHtml(h.name)}</td>
+                                <td style="padding: 10px 8px; text-align: center; color: var(--accent); font-weight: bold;">${fmt(h.dimming)}%</td>
+                                <td style="padding: 10px 8px; text-align: right; color: var(--amber); font-weight: 500;">${fmt(h.voltage)}</td>
+                                <td style="padding: 10px 8px; text-align: right; color: var(--amber); font-weight: 500;">${fmt(h.current)}</td>
+                                <td style="padding: 10px 8px; text-align: right; color: var(--blue); font-weight: bold;">${fmt(h.active_p)}</td>
+                                <td style="padding: 10px 8px; text-align: center;">${fmt(h.pf)}</td>
+                                <td style="padding: 10px 8px; text-align: center; color: var(--muted);">${fmt(h.rssi)}</td>
+                                <td style="padding: 10px 8px; font-family: monospace; font-size: 11px; color: var(--muted); max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${fmt(h.raw_hex)}">${fmt(h.raw_hex)}</td>
+                            </tr>`;
+                    }).join("");
+                }
             }
         }
 
@@ -726,6 +1100,10 @@
         });
 
         socket.on("state", renderState);
+        // Lightweight countdown tick — only updates the timer, no full re-render
+        socket.on("countdown_tick", (data) => {
+            renderCountdown(data.active, data.remaining);
+        });
         socket.on("device_brightness_update", (data) => {
             // Instant per-device brightness update without full DOM rebuild
             const { device_id, brightness } = data;
@@ -738,7 +1116,6 @@
                     const strong = card.querySelector('.dev-brightness');
                     if (strong) {
                         strong.textContent = `${brightness}%`;
-                        // Flash animation for visual feedback
                         strong.style.transition = 'color 0.15s';
                         strong.style.color = 'var(--green)';
                         setTimeout(() => { strong.style.color = ''; }, 600);
@@ -746,12 +1123,288 @@
                 }
             }
         });
-        socket.on("packet_log", (data) => {
-            const line = document.createElement("div");
-            line.textContent = data.msg;
-            els.log.appendChild(line);
-            els.log.scrollTop = els.log.scrollHeight;
+
+        // ── Device detail telemetry ──────────────────────────────────────
+        const _detailCache = {}; // device_id → last detail data
+
+        function renderDetailCard(d) {
+            const wh = d.working_min != null ? (d.working_min / 60).toFixed(1) : '--';
+            const stale = d.telemetry_stale;
+            const staleBadge = stale ? ' <span class="stale-badge">舊值</span>' : '';
+            const fmt = (v) => v != null ? v : '--';
+            return `
+            <div class="detail-card" id="dc-${d.device_id}">
+                <div class="detail-card-header">
+                    <span class="dc-name">💡 ${escapeHtml(d.name)}</span>
+                    <span class="dc-mac">${d.mac ?? '--'}</span>
+                    <span class="dc-cmd">${d.cmd ?? '--'}</span>
+                </div>
+                <div class="detail-grid">
+                    <div class="detail-item">
+                        <span class="di-label">亮度 (Dim)</span>
+                        <span class="di-value val-dim" data-field="dimming">${fmt(d.dimming)}%</span>
+                    </div>
+                    <div class="detail-item">
+                        <span class="di-label">群組 (Group)</span>
+                        <span class="di-value" data-field="group">${fmt(d.group)}</span>
+                    </div>
+                    <div class="detail-item">
+                        <span class="di-label">照度 (Lux)</span>
+                        <span class="di-value val-lux" data-field="lux">${fmt(d.lux)}</span>
+                    </div>
+                    <div class="detail-item">
+                        <span class="di-label">電壓 (V)${staleBadge}</span>
+                        <span class="di-value val-voltage" data-field="voltage">${fmt(d.voltage)}</span>
+                    </div>
+                    <div class="detail-item">
+                        <span class="di-label">電流 (A)${staleBadge}</span>
+                        <span class="di-value val-voltage" data-field="current">${fmt(d.current)}</span>
+                    </div>
+                    <div class="detail-item">
+                        <span class="di-label">頻率 (Hz)</span>
+                        <span class="di-value" data-field="freq">${fmt(d.freq)}</span>
+                    </div>
+                    <div class="detail-item">
+                        <span class="di-label">功率因數 (PF)</span>
+                        <span class="di-value" data-field="pf">${fmt(d.pf)}</span>
+                    </div>
+                    <div class="detail-item">
+                        <span class="di-label">有效功率 (W)${staleBadge}</span>
+                        <span class="di-value val-power" data-field="active_p">${fmt(d.active_p)}</span>
+                    </div>
+                    <div class="detail-item">
+                        <span class="di-label">視在功率 (VA)${staleBadge}</span>
+                        <span class="di-value val-power" data-field="apparent_p">${fmt(d.apparent_p)}</span>
+                    </div>
+                    <div class="detail-item">
+                        <span class="di-label">無效功率 (VAR)${staleBadge}</span>
+                        <span class="di-value val-power" data-field="reactive_p">${fmt(d.reactive_p)}</span>
+                    </div>
+                    <div class="detail-item">
+                        <span class="di-label">RSSI</span>
+                        <span class="di-value" data-field="rssi">${fmt(d.rssi)}</span>
+                    </div>
+                    <div class="detail-item">
+                        <span class="di-label">工作時間 (hr)</span>
+                        <span class="di-value" data-field="working_min">${wh}</span>
+                    </div>
+                    <div class="detail-item">
+                        <span class="di-label">序號</span>
+                        <span class="di-value" data-field="serial">${fmt(d.serial)}</span>
+                    </div>
+                </div>
+            </div>`;
+        }
+
+        function flashFields(cardEl, oldData, newData) {
+            const FIELDS = ["dimming", "group", "lux", "voltage", "current", "freq", "pf",
+                "active_p", "apparent_p", "reactive_p", "rssi", "working_min", "serial"];
+            const wh = newData.working_min != null ? (newData.working_min / 60).toFixed(1) : '--';
+            FIELDS.forEach(f => {
+                const el = cardEl.querySelector(`[data-field="${f}"]`);
+                if (!el) return;
+                const v = newData[f];
+                const newVal = f === "working_min" ? wh :
+                    f === "dimming" ? `${v ?? '--'}%` :
+                        (v != null ? v.toString() : '--');
+                if (el.textContent !== newVal) {
+                    el.textContent = newVal;
+                    el.classList.add("flash");
+                    setTimeout(() => el.classList.remove("flash"), 700);
+                }
+            });
+        }
+
+        socket.on("device_detail_update", (d) => {
+            const section = document.getElementById("device-detail-section");
+            if (!section) return;
+            const existing = document.getElementById(`dc-${d.device_id}`);
+            const oldData = _detailCache[d.device_id] || {};
+            const staleChanged = (oldData.telemetry_stale ?? false) !== Boolean(d.telemetry_stale);
+            if (!existing) {
+                section.insertAdjacentHTML("beforeend", renderDetailCard(d));
+            } else if (staleChanged) {
+                // Stale flag changed — rebuild the card to update badge labels
+                existing.outerHTML = renderDetailCard(d);
+            } else {
+                flashFields(existing, oldData, d);
+            }
+            _detailCache[d.device_id] = d;
         });
+
+        // ── Smart log parser ──────────────────────────────────────────────
+        const LOG_RULES = [
+            // Device connection events
+            {
+                re: /device-connected\s+(\S+)/, icon: "🔗", color: "#4A7C59",
+                fmt: (m) => `路燈連線 ${m[1]}`
+            },
+            {
+                re: /device-disconnected\s+(\S+)/, icon: "🔌", color: "#C5534C",
+                fmt: (m) => `路燈斷線 ${m[1]}`
+            },
+            {
+                re: /device-connection-reset\s+ip=(\S+)\s+reason=(\S+)/, icon: "⚠️", color: "#D49A36",
+                fmt: (m) => `連線重置 ${m[1]}（原因：${m[2]}）`
+            },
+            {
+                re: /device-lost\s+timeout=(\S+)\s+device=(.+)/, icon: "💀", color: "#C5534C",
+                fmt: (m) => `路燈失聯 ${m[2]}（逾時 ${m[1]}）`
+            },
+
+            // Brightness / status packets
+            {
+                re: /device-status\s+ip=\S+\s+cmd=(\S+)\s+device=(\S+)\s+brightness=(\d+)/, icon: "💡", color: "#5C7A99",
+                fmt: (m) => `[${m[1]}] ${m[2]} 回報亮度 ${m[3]}%`
+            },
+            {
+                re: /device-ack-update\s+ip=\S+\s+cmd=(\S+)\s+device=(\S+)\s+brightness=(\d+)/, icon: "✅", color: "#4A7C59",
+                fmt: (m) => `[${m[1]}] ${m[2]} ACK 亮度 ${m[3]}%`
+            },
+            {
+                re: /device-ack\s+ip=\S+\s+cmd=(\S+)\s+device=(\S+)/, icon: "✅", color: "#4A7C59",
+                fmt: (m) => `[${m[1]}] ${m[2]} ACK`
+            },
+
+            // Control commands (retry workers)
+            {
+                re: /retry-p1:\s+(\S+)\s+hex=([0-9A-F]+)/, icon: "📤", color: "#849F90",
+                fmt: (m) => `傳送指令 → ${m[1]}`
+            },
+            {
+                re: /retry-p2:\s+(\S+)\s+hex=([0-9A-F]+)/, icon: "🔄", color: "#D49A36",
+                fmt: (m) => `重試指令 → ${m[1]}`
+            },
+            {
+                re: /retry-success:\s+(\S+)/, icon: "🎯", color: "#4A7C59",
+                fmt: (m) => `指令已確認 ${m[1]}`
+            },
+            {
+                re: /retry-exhausted:\s+(.+)/, icon: "❌", color: "#C5534C",
+                fmt: (m) => `指令失敗 ${m[1]}（重試耗盡）`
+            },
+            {
+                re: /retry-skip-duplicate:\s+(\S+)/, icon: "⏭", color: "#848996",
+                fmt: (m) => `略過重複指令 ${m[1]}`
+            },
+            {
+                re: /consistency-sync:\s+(\S+)\s+reported=(\d+)\s+target=(\d+)/, icon: "🔧", color: "#D49A36",
+                fmt: (m) => `同步修正 ${m[1]}：回報 ${m[2]}% → 目標 ${m[3]}%`
+            },
+
+            // Auto level / countdown
+            {
+                re: /auto-upgrade to L(\d+)\s+(\S+)/, icon: "⬆️", color: "#5C7A99",
+                fmt: (m) => `升級亮度 → L${m[1]}（${m[2]}）`
+            },
+            {
+                re: /countdown-start target=L(\d+)\s+(\S+)\s+seconds=(\d+)/, icon: "⏱", color: "#D49A36",
+                fmt: (m) => `開始倒數 ${m[3]}s → 降至 L${m[1]}（${m[2]}）`
+            },
+            {
+                re: /countdown-cancelled/, icon: "🚫", color: "#848996",
+                fmt: () => `倒數取消（條件恢復）`
+            },
+            {
+                re: /countdown-finished apply-L(\d+)\s+(\S+)\s+brightness=(\d+)/, icon: "⬇️", color: "#5C7A99",
+                fmt: (m) => `倒數完成，降至 L${m[1]}（${m[2]}）亮度 ${m[3]}%`
+            },
+
+            // Emergency
+            {
+                re: /Emergency state changed: true/, icon: "🚨", color: "#C5534C",
+                fmt: () => `緊急按鈕觸發！群組6 → 100%`
+            },
+            {
+                re: /Emergency state changed: false/, icon: "✅", color: "#4A7C59",
+                fmt: () => `緊急解除，恢復自動亮度`
+            },
+            {
+                re: /Emergency:\s+(.+)/, icon: "🚨", color: "#C5534C",
+                fmt: (m) => `緊急：${m[1]}`
+            },
+
+            // Mode change
+            {
+                re: /mode-change mode=(\S+)/, icon: "🔀", color: "#849F90",
+                fmt: (m) => `切換模式 → ${m[1] === "auto" ? "自動" : "手動"}`
+            },
+            {
+                re: /back-to-auto L(\d+)\s+(\S+)/, icon: "🔄", color: "#5C7A99",
+                fmt: (m) => `回到自動模式 L${m[1]}`
+            },
+
+            // LUX sensor
+            {
+                re: /lux-modbus-init/, icon: "☀️", color: "#849F90",
+                fmt: () => `光感測器初始化`
+            },
+            {
+                re: /lux-worker-exception:\s+(.+)/, icon: "⚠️", color: "#D49A36",
+                fmt: (m) => `光感測器異常：${m[1]}`
+            },
+
+            // TCP server
+            {
+                re: /tcp-server started/, icon: "🖧", color: "#4A7C59",
+                fmt: () => `TCP 伺服器啟動`
+            },
+            {
+                re: /tcp-server failed\s+(.+)/, icon: "❌", color: "#C5534C",
+                fmt: (m) => `TCP 啟動失敗：${m[1]}`
+            },
+
+            // Errors / unhandled
+            {
+                re: /device-rx-unmatched\s+ip=\S+\s+cmd=(\S+)\s+device=(\S+)/, icon: "❓", color: "#848996",
+                fmt: (m) => `未知裝置封包 cmd=${m[1]} id=${m[2]}`
+            },
+            {
+                re: /device-rx-unhandled\s+ip=\S+\s+cmd=(\S+)\s+device=(\S+)/, icon: "❓", color: "#848996",
+                fmt: (m) => `未處理封包 cmd=${m[1]} from ${m[2]}`
+            },
+        ];
+
+        function parseLogMsg(raw) {
+            // raw format: "[HH:MM:SS] message"
+            const timeMatch = raw.match(/^\[(\d{2}:\d{2}:\d{2})\]\s+(.+)$/);
+            if (!timeMatch) return null;
+            const time = timeMatch[1];
+            const body = timeMatch[2];
+
+            for (const rule of LOG_RULES) {
+                const m = body.match(rule.re);
+                if (m) {
+                    return { time, icon: rule.icon, color: rule.color, text: rule.fmt(m) };
+                }
+            }
+            return null; // no match → show raw
+        }
+
+        const MAX_LOG_LINES = 200;
+        function appendLogLine(rawMsg) {
+            const parsed = parseLogMsg(rawMsg);
+            const div = document.createElement("div");
+            div.style.cssText = "display:flex;gap:6px;align-items:baseline;padding:2px 0;border-bottom:1px solid rgba(0,0,0,0.04);";
+
+            if (parsed) {
+                div.innerHTML = `
+                    <span style="flex-shrink:0;color:#848996;font-size:11px;min-width:58px;">${parsed.time}</span>
+                    <span style="flex-shrink:0;font-size:13px;">${parsed.icon}</span>
+                    <span style="color:${parsed.color};font-weight:500;font-size:12px;line-height:1.5;">${parsed.text}</span>`;
+            } else {
+                div.innerHTML = `<span style="color:#848996;font-size:11px;word-break:break-all;">${escapeHtml(rawMsg)}</span>`;
+            }
+
+            els.log.appendChild(div);
+            // Keep max lines
+            while (els.log.children.length > MAX_LOG_LINES) {
+                els.log.removeChild(els.log.firstChild);
+            }
+            els.log.scrollTop = els.log.scrollHeight;
+        }
+
+        socket.on("packet_log", (data) => { appendLogLine(data.msg); });
         socket.on("vlm_alert", updateVlm);
 
         fetch("/api/status").then((res) => res.json()).then(renderState).catch(() => { });
