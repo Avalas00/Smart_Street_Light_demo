@@ -14,7 +14,7 @@ import torchvision
 from flask import Flask, Response, jsonify, render_template, request
 from flask_socketio import SocketIO
 from ultralytics import YOLO
-
+#123
 try:
     import Jetson.GPIO as GPIO
     HAS_GPIO = True
