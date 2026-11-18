@@ -1,0 +1,13 @@
+# JetPack 5.1.2, Python 3.8 and ARM64
+torch @ https://developer.download.nvidia.com/compute/redist/jp/v511/pytorch/torch-2.0.0+nv23.05-cp38-cp38-linux_aarch64.whl
+torchvision==0.15.1
+numpy==1.23.5
+opencv-python==4.13.0.92
+ultralytics==8.4.77
+Flask==3.0.3
+Flask-SocketIO==5.6.1
+simple-websocket==1.1.0
+requests==2.32.4
+pymodbus==3.6.9
+pyserial==3.5
+Jetson.GPIO==2.1.1

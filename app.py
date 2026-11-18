@@ -12,18 +12,21 @@ import json
 import torch
 import torchvision
 from flask import Flask, Response, jsonify, render_template, request
-from flask_socketio import SocketIO
+from flask_socketio import SocketIO, emit
 from ultralytics import YOLO
 #123
-try:
-    import Jetson.GPIO as GPIO
-    HAS_GPIO = True
-except ImportError:
-    HAS_GPIO = False
-    GPIO = None
+USE_GPIO = os.getenv("ENABLE_GPIO", "0") == "1"
+GPIO = None
+HAS_GPIO = False
+if USE_GPIO:
+    try:
+        import Jetson.GPIO as GPIO
+        HAS_GPIO = True
+    except ImportError:
+        pass
 
 PIN_IN = 22
-PIN_OUTS = [14, 16]
+PIN_OUTS = [16]
 
 try:
     from vlm_harness import DetectionSummary, build_vlm_harness
@@ -68,7 +71,7 @@ JPEG_QUALITY = int(os.getenv("JPEG_QUALITY", "80"))
 INFER_IMGSZ = int(os.getenv("INFER_IMGSZ", "640"))
 YOLO_MODEL = os.getenv(
     "YOLO_MODEL",
-    "/home/lucas/Desktop/streetlight_lite_agx/models/yolo26n.pt",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "yolo26n.pt"),
 )
 YOLO_DEVICE = os.getenv("YOLO_DEVICE", "cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -133,6 +136,8 @@ AUTO_LEVELS = [
     LightLevel(3, "high_pedestrian", 60),
     LightLevel(4, "emergency", 100),
 ]
+DAYLIGHT_LUX_THRESHOLD = 270
+MID_PEOPLE_MAX = 3
 #倒數秒數
 
 COUNTDOWN_SECONDS = int(os.getenv("COUNTDOWN_SECONDS", "15"))
@@ -148,7 +153,8 @@ state = {
     "device_connected": False,
     "device_ip": LIGHT_TARGET_IP,
     "devices": DEVICES,
-    "device_brightness": {d["id"]: AUTO_LEVELS[0].brightness for d in DEVICES},
+    "device_brightness": {d["id"]: None for d in DEVICES},
+    "device_brightness_ts": {},
     "device_lost": {d["id"]: False for d in DEVICES},
     "device_detail": {d["id"]: {} for d in DEVICES},
     "tcp_error": "",
@@ -169,7 +175,7 @@ state = {
     "lux_error": "",
     "pending_level": None,
     "pending_brightness": None,
-    "device_target_brightness": {d["id"]: AUTO_LEVELS[0].brightness for d in DEVICES},
+    "device_target_brightness": {d["id"]: None for d in DEVICES},
     "device_last_command_time": {d["id"]: 0.0 for d in DEVICES},
     "camera_fps": 0.0,
     "pipeline_fps": 0.0,
@@ -178,15 +184,26 @@ state = {
     "encode_ms": 0.0,
     "camera_fourcc": CAMERA_FOURCC,
     "camera_requested_fps": CAMERA_FPS,
+    "camera_status": "starting",
+    "camera_image_status": "unknown",
+    "camera_mean_luma": None,
+    "yolo_status": "loading",
+    "yolo_error": "",
+    "yolo_last_success": None,
     "emergency_trigger": False,
+    "gpio_status": "starting" if USE_GPIO else "disabled",
     "telemetry_history": [],
 }
 
 # Countdown timer control
 _countdown_cancel = threading.Event()
 _countdown_generation = 0
-_retry_lock = threading.Lock()
-_retry_inflight: Dict[str, dict] = {}
+_retry_ready = threading.Condition()
+_retry_inflight: Dict[Tuple[int, str], dict] = {}
+RETRY_DELAYS = (2.0, 2.0, 5.0, 5.0, 5.0, 5.0)
+GROUP_FOLLOWUP_DELAYS = (2.0, 3.0, 3.0)
+GROUP_CONFIRMATION_GRACE = 1.0
+COMMAND_TIMEOUT = 30.0
 AUTO_LEVEL_STABLE_SEC = float(os.getenv("AUTO_LEVEL_STABLE_SEC", "1.0"))
 _auto_candidate_level: Optional[int] = None
 _auto_candidate_since = 0.0
@@ -200,8 +217,6 @@ vlm_harness = build_vlm_harness() if build_vlm_harness else None
 
 # Per-device last-seen timestamp for lost detection
 _device_last_seen: Dict[str, float] = {d["id"]: 0.0 for d in DEVICES}
-# Per-device last control acknowledgment timestamp
-_last_ack_time: Dict[str, float] = {d["id"]: 0.0 for d in DEVICES}
 DEVICE_LOST_TIMEOUT = 1000  # 3 minutes
 
 # USB RS-485 Light Sensor (JNC LUX20)
@@ -213,21 +228,17 @@ _lux_samples: deque = deque()  # (timestamp, lux)
 _last_lux_error_log = 0.0
 
 
-def _drop_tcp_client(client_ip: str, reason: str) -> None:
-    conn = active_tcp_clients.pop(client_ip, None)
-    if conn is not None:
-        try:
-            conn.shutdown(socket.SHUT_RDWR)
-        except Exception:
-            pass
-        try:
-            conn.close()
-        except Exception:
-            pass
-        log(f"device-connection-reset ip={client_ip} reason={reason}")
-    device_ips = [d["ip"] for d in DEVICES]
-    with state_lock:
-        state["device_connected"] = any(ip in active_tcp_clients for ip in device_ips)
+def _close_tcp_client(conn: socket.socket) -> None:
+    try:
+        conn.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass
+    conn.close()
+
+
+def _update_device_connection() -> None:
+    with state_lock, _retry_ready:
+        state["device_connected"] = any(d["ip"] in active_tcp_clients for d in DEVICES)
     broadcast_state()
 
 
@@ -242,14 +253,13 @@ def log(message: str) -> None:
 
 def choose_auto_level(person_count: int, lux: Optional[float]) -> LightLevel:
     """Choose the appropriate light level based on environmental lux and person count."""
-    # 1. Day mode: if lux > 150, stay at L0 (standby, 0% brightness)
-    if lux is not None and lux > 270:
+    if lux is not None and lux > DAYLIGHT_LUX_THRESHOLD:
         return AUTO_LEVELS[0]
     
-    # 2. Night mode: lux <= 150 (or sensor unavailable)
+    # When lux is unavailable, use person count alone.
     if person_count <= 0:
         return AUTO_LEVELS[1] # L1 (low)
-    elif person_count <= 3:
+    elif person_count <= MID_PEOPLE_MAX:
         return AUTO_LEVELS[2] # L2 (mid)
     else:
         return AUTO_LEVELS[3] # L3 (high)
@@ -296,89 +306,126 @@ def build_group_control_packet(device_id: str, group_id: int, brightness: int) -
 
 def send_light(brightness: int, reason: str, target_device: Optional[dict] = None, group_id: Optional[int] = None) -> Tuple[bool, str]:
     """Send light control (0x52) or group control (0x36) command."""
-    devices_to_control = []
-    
-    if group_id is not None:
-        # Group control: Find at least one device that belongs to this group
-        representative_device = None
-        for d in DEVICES:
-            if d.get("group_id") == group_id:
-                representative_device = d
-                break
-        
-        if representative_device:
-            # Update target tracking for all devices in this group
+    with state_lock:
+        if state["emergency_trigger"] and not (
+            brightness == 100 and reason in ("emergency-on", "consistency-sync")
+        ):
+            return False, "Emergency is active"
+        if group_id is not None:
+            members = [device for device in DEVICES if device.get("group_id") == group_id]
+            if not members:
+                return False, f"No devices found in group {group_id}"
+            reason = f"{reason}-group-{group_id}"
+            representative = members[0]
             now = time.time()
-            with state_lock:
-                for d in DEVICES:
-                    if d.get("group_id") == group_id:
-                        state["device_target_brightness"][d["id"]] = brightness
-                        state["device_last_command_time"][d["id"]] = now
-            
-            packet = build_group_control_packet(representative_device["id"], group_id, brightness)
-            msg_reason = f"{reason}-group-{group_id}"
-            _start_retry_worker(representative_device, packet, msg_reason)
-            return True, f"Group {group_id} control started via {representative_device['name']}"
-        else:
-            return False, f"No devices found in group {group_id}"
+            for device in members:
+                state["device_target_brightness"][device["id"]] = brightness
+                state["device_last_command_time"][device["id"]] = now
+            packet = build_group_control_packet(representative["id"], group_id, brightness)
+            enabled = [device for device in members if device.get("enabled", True)]
+            _start_retry_worker(representative, packet, reason, enabled or [representative])
+            return True, f"Group {group_id} control started via {representative['name']}"
 
-    # Individual control
-    if target_device:
-        devices_to_control = [target_device]
-    else:
-        devices_to_control = DEVICES
+        devices_to_control = [target_device] if target_device else DEVICES
 
-    for device in devices_to_control:
-        if not device.get("enabled", True):
-            continue
-        
-        # Update target tracking
-        with state_lock:
+        for device in devices_to_control:
+            if not device.get("enabled", True):
+                continue
+
             state["device_target_brightness"][device["id"]] = brightness
             state["device_last_command_time"][device["id"]] = time.time()
-            
-        packet = build_light_packet(device["id"], brightness)
-        _start_retry_worker(device, packet, reason)
 
-    return True, "Control sequence started"
+            packet = build_light_packet(device["id"], brightness)
+            _start_retry_worker(device, packet, reason)
+
+        return True, "Control sequence started"
 
 
-def _start_retry_worker(device: dict, packet: bytes, reason: str) -> None:
-    dev_id = device["id"]
+def _start_retry_worker(device: dict, packet: bytes, reason: str, members=None) -> None:
+    opcode = packet[2]
     target_ip = device["ip"]
-    packet_hex = packet.hex().upper()
-    if target_ip not in active_tcp_clients:
-        log(f"control-not-connected: {device['name']} target={target_ip} hex={packet_hex}")
-        return
-
-    # Log 0x52 / 0x36 sent packets to history
-    # The brightness is at packet[9] for 0x52 (length 11), packet[10] for 0x36 (length 12)
-    dimming_val = packet[-2] if len(packet) > 2 else 0
-    _append_history(device["name"], packet_hex, f"0x{packet[2]:02X}", dimming_val, time.time())
-
-    with _retry_lock:
-        current = _retry_inflight.get(dev_id)
-        if current and current.get("packet_hex") == packet_hex and current.get("active"):
-            log(f"retry-skip-duplicate: {device['name']} hex={packet_hex}")
+    devices = {d["id"]: d for d in (members or [device])}
+    key = (opcode, str(packet[9]) if opcode == 0x36 else device["id"])
+    now = time.monotonic()
+    with _retry_ready:
+        current = _retry_inflight.get(key)
+        if current and current["packet"] == packet and current["original_ids"] == devices.keys():
             return
-        token = time.time()
-        _retry_inflight[dev_id] = {
+        if opcode in (0x36, 0x52):
+            for other_key, item in list(_retry_inflight.items()):
+                if other_key == key or other_key[0] not in (0x36, 0x52):
+                    continue
+                superseded = item["devices"].keys() & devices.keys()
+                for device_id in superseded:
+                    del item["devices"][device_id]
+                if not item["devices"]:
+                    del _retry_inflight[other_key]
+        _retry_inflight[key] = {
             "device": device,
+            "devices": devices,
+            "original_ids": set(devices),
+            "awaiting": {},
             "packet": packet,
-            "packet_hex": packet_hex,
             "reason": reason,
-            "token": token,
-            "active": True,
-            "phase": 1,
+            "queued_at": now,
             "attempts": 0,
-            "next_send_time": 0.0,
+            "retry_delays": RETRY_DELAYS,
+            "next_send_time": now,
         }
+        connected = target_ip in active_tcp_clients
+        _retry_ready.notify()
+    if not connected:
+        log(f"control-queued-offline: {device['name']} target={target_ip} reason={reason}")
+
+
+def _confirm_control(device_id: str, cmd: int, value=None) -> None:
+    now = time.monotonic()
+    with _retry_ready:
+        for key, item in list(_retry_inflight.items()):
+            sent = item["awaiting"].get(device_id)
+            if device_id not in item["devices"] or sent is None:
+                continue
+            sent_commands, sent_at = sent
+            if key[0] == 0x56:
+                if cmd not in (0x41, 0x57):
+                    continue
+            elif value != item["packet"][-2] or (cmd not in (0x40, 0x80) and cmd - 1 not in sent_commands):
+                continue
+            device = item["devices"].pop(device_id)
+            if not item["devices"]:
+                del _retry_inflight[key]
+            elif key[0] == 0x36 and item["retry_delays"] is RETRY_DELAYS:
+                item["attempts"] = 0
+                item["retry_delays"] = GROUP_FOLLOWUP_DELAYS
+                item["next_send_time"] = now + GROUP_CONFIRMATION_GRACE
+            _retry_ready.notify()
+            break
+        else:
+            return
+    log(f"control-confirmed: {device['name']} cmd=0x{cmd:02X} value={value} "
+        f"since_send_ms={(now - sent_at) * 1000:.1f} total_ms={(now - item['queued_at']) * 1000:.1f}")
+
+
+def _reconcile_status(device: dict, brightness: int, now: float) -> None:
+    device_id = device["id"]
+    with state_lock:
+        target = state["device_target_brightness"].get(device_id)
+        last_cmd = state["device_last_command_time"].get(device_id, 0.0)
+        if target is None or brightness == target or now - last_cmd <= 10.0:
+            return
+        with _retry_ready:
+            if any(key[0] in (0x36, 0x52) and device_id in item["devices"]
+                   for key, item in _retry_inflight.items()):
+                return
+        log(f"consistency-sync: {device['name']} reported={brightness} target={target}. Re-sending...")
+        send_light(target, "consistency-sync", target_device=device)
 
 
 def get_public_state() -> dict:
     with state_lock:
         public = dict(state)
-    public["clients"] = sorted(active_tcp_clients.keys())
+    with _retry_ready:
+        public["clients"] = sorted(active_tcp_clients)
     public["logs"] = list(logs)[-50:]
     public["server_info"] = f"{TCP_HOST}:{TCP_PORT}"
     return public
@@ -433,20 +480,12 @@ def _countdown_worker(target: LightLevel, generation: int) -> None:
 def set_level_from_count(person_count: int) -> None:
     global _auto_candidate_level, _auto_candidate_since, _countdown_generation
     with state_lock:
-        # Emergency override: skip all auto-level logic while emergency is active
-        if state.get("emergency_trigger"):
-            state["person_count"] = person_count
-            return
-        current_lux = state.get("lux_avg")
-        current_level_idx = state["level"]
-        is_auto = state["mode"] == "auto"
-
-    target_level = choose_auto_level(person_count, current_lux)
-    now = time.time()
-    
-    with state_lock:
         state["person_count"] = person_count
-        if not is_auto:
+        if state.get("emergency_trigger"):
+            _auto_candidate_level = None
+            return
+        if state["mode"] != "auto":
+            _auto_candidate_level = None
             if state["countdown_active"] or state["pending_level"] is not None:
                 _countdown_generation += 1
                 state["countdown_active"] = False
@@ -455,13 +494,16 @@ def set_level_from_count(person_count: int) -> None:
                 broadcast_state()
             return
 
-        # 1. UPGRADE Logic (target > current) -> Immediate (with candidate stability)
+        target_level = choose_auto_level(person_count, state.get("lux_avg"))
+        current_level_idx = state["level"]
+        now = time.monotonic()
+
+        # Confirm an upgrade after the configured stability period.
         if target_level.level > current_level_idx:
             # Require stable candidate for upgrades to avoid flickering
             if _auto_candidate_level != target_level.level:
                 _auto_candidate_level = target_level.level
                 _auto_candidate_since = now
-                return
             if now - _auto_candidate_since < AUTO_LEVEL_STABLE_SEC:
                 return
             _countdown_generation += 1
@@ -500,7 +542,7 @@ def set_level_from_count(person_count: int) -> None:
                 state["countdown_remaining"] = COUNTDOWN_SECONDS
                 generation = _countdown_generation
                 threading.Thread(target=_countdown_worker, args=(target_level, generation), daemon=True).start()
-                log(f"countdown-start: waiting 30s to downgrade to L{target_level.level}")
+                log(f"countdown-start: waiting {COUNTDOWN_SECONDS}s to downgrade to L{target_level.level}")
                 broadcast_state()
             return
 
@@ -517,13 +559,21 @@ def start_tcp_server() -> None:
             while True:
                 conn, addr = server.accept()
                 client_ip = addr[0]
-                active_tcp_clients[client_ip] = conn
-                # Check if any device IP is connected
-                device_ips = [d["ip"] for d in DEVICES]
-                with state_lock:
-                    state["device_connected"] = any(ip in active_tcp_clients for ip in device_ips)
+                conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                conn.settimeout(1.0)
+                with _retry_ready:
+                    previous = active_tcp_clients.get(client_ip)
+                    active_tcp_clients[client_ip] = conn
+                    now = time.monotonic()
+                    for item in _retry_inflight.values():
+                        if any(d["ip"] == client_ip for d in item["devices"].values()):
+                            if item["attempts"] < len(item["retry_delays"]):
+                                item["next_send_time"] = now
+                    _retry_ready.notify()
+                if previous is not None:
+                    _close_tcp_client(previous)
                 log(f"device-connected {client_ip}:{addr[1]}")
-                broadcast_state()
+                _update_device_connection()
                 threading.Thread(target=handle_tcp_client, args=(conn, client_ip), daemon=True).start()
     except OSError as exc:
         message = f"tcp-server failed host={TCP_HOST} port={TCP_PORT}: {exc}"
@@ -553,6 +603,36 @@ def _append_history(device_name: str, packet_hex: str, cmd_hex: str, brightness:
         if len(history) > 20:
             history = history[-20:]
         state["telemetry_history"] = history
+
+def _update_reported_brightness(device: dict, brightness: int, cmd: int, now: float,
+                                detail: Optional[dict] = None) -> bool:
+    if not 0 <= brightness <= 100:
+        log(f"device-rx-invalid-brightness device={device['id']} brightness={brightness}")
+        return False
+    dev_id = device["id"]
+    with state_lock:
+        updated = dict(state["device_detail"].get(dev_id, {}))
+        if detail is not None:
+            updated.update(detail)
+        updated.update({
+            "device_id": dev_id,
+            "name": device["name"],
+            "mac": dev_id,
+            "cmd": f"0x{cmd:02X}",
+            "dimming": brightness,
+            "ts": now,
+            "telemetry_stale": detail is None,
+        })
+        state["device_brightness"][dev_id] = brightness
+        state["device_brightness_ts"][dev_id] = now
+        state["device_detail"][dev_id] = updated
+    socketio.emit("device_brightness_update", {
+        "device_id": dev_id, "mac": dev_id, "brightness": brightness,
+        "cmd": f"0x{cmd:02X}", "ts": now,
+    })
+    socketio.emit("device_detail_update", updated)
+    return True
+
 
 def _parse_status_packet(packet: bytes, client_ip: str) -> None:
     """Parse incoming packets: 0x40/0x80 status and 0x41/0x53/0x37 ACK packets."""
@@ -623,81 +703,39 @@ def _parse_status_packet(packet: bytes, client_ip: str) -> None:
             "ts":           now,
             "telemetry_stale": False,  # Fresh 0x80 data — not stale
         }
+        if not _update_reported_brightness(matched_device, brightness, cmd, now, detail):
+            return
         # Add to telemetry history
         _append_history(matched_device["name"], packet_hex, f"0x{cmd:02X}", brightness, now,
                         voltage, current, active_p, pf, rssi)
 
-        with state_lock:
-            state["device_brightness"][dev_id] = brightness
-            state["device_detail"][dev_id] = detail
-            
-            target = state["device_target_brightness"].get(dev_id)
-            last_cmd_t = state["device_last_command_time"].get(dev_id, 0.0)
-
         log(f"device-status ip={client_ip} cmd=0x{cmd:02X} device={matched_device['name']} brightness={brightness}")
-        socketio.emit("device_brightness_update", {"device_id": dev_id, "brightness": brightness, "cmd": f"0x{cmd:02X}"})
-        socketio.emit("device_detail_update", detail)
-
-        if target is not None and brightness == target:
-            _last_ack_time[dev_id] = now
-
-        # Inconsistency check
-        if target is not None and brightness != target:
-            if now - last_cmd_t > 10.0:
-                log(f"consistency-sync: {matched_device['name']} reported={brightness} target={target}. Re-sending...")
-                send_light(target, "consistency-sync", target_device=matched_device)
+        _confirm_control(dev_id, cmd, brightness)
+        _reconcile_status(matched_device, brightness, now)
 
     elif cmd == 0x40 and len(packet) >= 14:
         brightness = packet[13]
+        if not _update_reported_brightness(matched_device, brightness, cmd, now):
+            return
         _append_history(matched_device["name"], packet_hex, f"0x{cmd:02X}", brightness, now)
-        with state_lock:
-            state["device_brightness"][dev_id] = brightness
-            target = state["device_target_brightness"].get(dev_id)
-            last_cmd_t = state["device_last_command_time"].get(dev_id, 0.0)
-            # Sync dimming into device_detail and mark telemetry as stale
-            # (power/voltage values are from the previous 0x80 packet)
-            if dev_id in state["device_detail"] and state["device_detail"][dev_id]:
-                state["device_detail"][dev_id]["dimming"] = brightness
-                state["device_detail"][dev_id]["telemetry_stale"] = True
-
         log(f"device-status ip={client_ip} cmd=0x{cmd:02X} device={matched_device['name']} brightness={brightness}")
-        socketio.emit("device_brightness_update", {"device_id": dev_id, "brightness": brightness, "cmd": f"0x{cmd:02X}"})
-        if target is not None and brightness == target:
-            _last_ack_time[dev_id] = now
-        if target is not None and brightness != target:
-            if now - last_cmd_t > 10.0:
-                log(f"consistency-sync: {matched_device['name']} reported={brightness} target={target}. Re-sending...")
-                send_light(target, "consistency-sync", target_device=matched_device)
-    elif cmd in (0x41, 0x53, 0x37):
-        _last_ack_time[dev_id] = now
+        _confirm_control(dev_id, cmd, brightness)
+        _reconcile_status(matched_device, brightness, now)
 
+    elif cmd in (0x41, 0x53, 0x37):
         if len(packet) >= 14:
             # For 0x41, 0x53, 0x37, brightness is at index 13
             brightness = packet[13]
+            if not _update_reported_brightness(matched_device, brightness, cmd, now):
+                return
             _append_history(matched_device["name"], packet_hex, f"0x{cmd:02X}", brightness, now)
-            with state_lock:
-                state["device_brightness"][dev_id] = brightness
-                target = state["device_target_brightness"].get(dev_id)
-                last_cmd_t = state["device_last_command_time"].get(dev_id, 0.0)
-                if dev_id in state["device_detail"] and state["device_detail"][dev_id]:
-                    state["device_detail"][dev_id]["dimming"] = brightness
-                    state["device_detail"][dev_id]["telemetry_stale"] = True
-
             log(f"device-ack-update ip={client_ip} cmd=0x{cmd:02X} device={matched_device['name']} brightness={brightness}%")
-            socketio.emit("device_brightness_update", {"device_id": dev_id, "brightness": brightness, "cmd": f"0x{cmd:02X}"})
-
-            if target is not None and brightness == target:
-                _last_ack_time[dev_id] = now
-            if target is not None and brightness != target:
-                if now - last_cmd_t > 10.0:
-                    log(f"consistency-sync: {matched_device['name']} reported={brightness} target={target}. Re-sending...")
-                    g_id = matched_device.get("group_id")
-                    if g_id is not None:
-                        send_light(target, "consistency-sync", group_id=g_id)
-                    else:
-                        send_light(target, "consistency-sync", target_device=matched_device)
+            _confirm_control(dev_id, cmd, brightness)
         else:
             log(f"device-ack ip={client_ip} cmd=0x{cmd:02X} device={matched_device['name']}")
+            _confirm_control(dev_id, cmd)
+    elif cmd == 0x57:
+        _confirm_control(dev_id, cmd)
     else:
         log(f"device-rx-unhandled ip={client_ip} cmd=0x{cmd:02X} device={matched_device['name']} hex={packet_hex}")
         
@@ -705,61 +743,71 @@ def _parse_status_packet(packet: bytes, client_ip: str) -> None:
 
 
 def _central_retry_worker() -> None:
-    """Central polling worker for sending retries continuously without blocking."""
     while True:
-        now = time.time()
-        to_send = []
-        with _retry_lock:
-            for dev_id, item in list(_retry_inflight.items()):
-                if not item.get("active"):
-                    continue
-                
-                device = item["device"]
-                
-                # Check if acked
-                if _last_ack_time.get(dev_id, 0) >= item["token"]:
-                    log(f"retry-success: {device['name']} acknowledged in p{item['phase']}")
-                    _retry_inflight.pop(dev_id, None)
-                    continue
-
-                if item["phase"] == 1:
-                    if item["attempts"] >= 3:
-                        log(f"retry-p2-wait: phase 1 failed, waiting 5s for {device['name']}")
-                        item["phase"] = 2
-                        item["next_send_time"] = now + 5.0
-                        item["attempts"] = 0
-                        continue
-                    if now >= item["next_send_time"]:
-                        to_send.append(item)
+        due = None
+        expired = []
+        with _retry_ready:
+            now = time.monotonic()
+            next_wake = None
+            for key, item in list(_retry_inflight.items()):
+                disconnect_deadline = item["queued_at"] + COMMAND_TIMEOUT
+                packet = item["packet"]
+                devices = item["devices"]
+                if key[0] == 0x36 and devices.keys() != item["original_ids"]:
+                    sends = [(d["ip"], build_light_packet(device_id, packet[-2]), (device_id,))
+                             for device_id, d in devices.items()]
+                else:
+                    sends = [(item["device"]["ip"], packet, tuple(devices))]
+                connected = any(ip in active_tcp_clients for ip, _, _ in sends)
+                deadline = item["next_send_time"] if connected else disconnect_deadline
+                retry_delays = item["retry_delays"]
+                exhausted = connected and item["attempts"] >= len(retry_delays)
+                if deadline <= now:
+                    if exhausted or not connected:
+                        expired.append(item)
+                        del _retry_inflight[key]
+                    elif due is None:
+                        item["next_send_time"] = now + retry_delays[item["attempts"]]
                         item["attempts"] += 1
-                        item["next_send_time"] = now + 2.0
-                        
-                elif item["phase"] == 2:
-                    if item["attempts"] >= 3:
-                        log(f"retry-exhausted: {device['name']} failed to acknowledge after all attempts")
-                        _retry_inflight.pop(dev_id, None)
-                        continue
-                    if now >= item["next_send_time"]:
-                        to_send.append(item)
-                        item["attempts"] += 1
-                        item["next_send_time"] = now + 5.0
+                        due = (key, item, sends, item["attempts"])
+                elif next_wake is None or deadline < next_wake:
+                    next_wake = deadline
+            if due is None and not expired:
+                timeout = None if next_wake is None else max(0.0, next_wake - now)
+                _retry_ready.wait(timeout)
+                continue
 
-        for item in to_send:
-            device = item["device"]
-            packet = item["packet"]
-            hex_str = packet.hex().upper()
-            target_ip = device["ip"]
-            log(f"retry-p{item['phase']}: {device['name']} hex={hex_str}")
-            
-            conn = active_tcp_clients.get(target_ip)
-            if conn:
-                try:
-                    conn.sendall(packet)
-                except Exception:
-                    pass
-            time.sleep(0.05)
+        for item in expired:
+            missing = ", ".join(d["name"] for d in item["devices"].values())
+            log(f"retry-exhausted: {missing} did not confirm reason={item['reason']}")
 
-        time.sleep(0.1)
+        if due is None:
+            continue
+        key, item, sends, attempt = due
+        for ip, packet, recipients in sends:
+            with _retry_ready:
+                conn = active_tcp_clients.get(ip)
+                if (_retry_inflight.get(key) is not item or conn is None
+                        or any(device_id not in item["devices"] for device_id in recipients)):
+                    continue
+                sent_at = time.monotonic()
+                for device_id in recipients:
+                    sent_commands, _ = item["awaiting"].get(device_id, (set(), None))
+                    item["awaiting"][device_id] = (sent_commands | {packet[2]}, sent_at)
+                name = item["device"]["name"] if packet[2] == 0x36 else item["devices"][recipients[0]]["name"]
+            try:
+                conn.sendall(packet)
+            except OSError as exc:
+                log(f"tcp-send-error: ip={ip} reason={item['reason']} error={exc}")
+                _close_tcp_client(conn)
+                continue
+            send_ms = (time.monotonic() - sent_at) * 1000
+            phase = "p1" if attempt <= 3 else "p2"
+            log(f"retry-{phase}: {name} hex={packet.hex().upper()} reason={item['reason']} "
+                f"dispatch_ms={(sent_at - item['queued_at']) * 1000:.1f} "
+                f"send_ms={send_ms:.1f}")
+            if attempt == 1 and packet[2] in (0x36, 0x52):
+                _append_history(name, packet.hex().upper(), f"0x{packet[2]:02X}", packet[-2], time.time())
 
 
 def handle_tcp_client(conn: socket.socket, client_ip: str) -> None:
@@ -767,12 +815,18 @@ def handle_tcp_client(conn: socket.socket, client_ip: str) -> None:
     try:
         with conn:
             while True:
-                data = conn.recv(1024)
+                try:
+                    data = conn.recv(1024)
+                except socket.timeout:
+                    continue
                 if not data:
                     break
+                with _retry_ready:
+                    if active_tcp_clients.get(client_ip) is not conn:
+                        break
                 buffer += data
                 while len(buffer) >= 2:
-                    if buffer[0] != 0x02:
+                    if buffer[0] != 0x02 or buffer[1] < 9:
                         buffer = buffer[1:]
                         continue
                     expected_length = buffer[1]
@@ -786,13 +840,14 @@ def handle_tcp_client(conn: socket.socket, client_ip: str) -> None:
     except Exception as exc:
         log(f"device-error ip={client_ip} error={exc}")
     finally:
-        active_tcp_clients.pop(client_ip, None)
-        # Check if any device IP is still connected
-        device_ips = [d["ip"] for d in DEVICES]
-        with state_lock:
-            state["device_connected"] = any(ip in active_tcp_clients for ip in device_ips)
-        log(f"device-disconnected {client_ip}")
-        broadcast_state()
+        with _retry_ready:
+            was_current = active_tcp_clients.get(client_ip) is conn
+            if was_current:
+                del active_tcp_clients[client_ip]
+                _retry_ready.notify()
+        if was_current:
+            log(f"device-disconnected {client_ip}")
+            _update_device_connection()
 
 
 def encode_jpeg(frame) -> bytes:
@@ -925,28 +980,62 @@ def maybe_run_vlm(frame, summary) -> None:
     threading.Thread(target=worker, daemon=True).start()
 
 
-def camera_worker() -> None:
-    global latest_jpeg, latest_raw_frame, global_camera
+def load_yolo_model():
     log(
         "loading-yolo "
         f"model={YOLO_MODEL} device={YOLO_DEVICE} "
         f"torch={torch.__version__} cuda={torch.cuda.is_available()}"
     )
-    model = YOLO(YOLO_MODEL)
-    if hasattr(model, "fuse"):
+    # Let the prediction backend prepare precision and fusion on the target device.
+    return YOLO(YOLO_MODEL)
+
+
+def camera_image_health(frame) -> Tuple[str, float]:
+    gray = cv2.cvtColor(frame[::8, ::8], cv2.COLOR_BGR2GRAY)
+    mean_luma = float(gray.mean())
+    dark = mean_luma < 8.0 and float((gray < 16).mean()) > 0.98
+    return ("dark" if dark else "ok"), round(mean_luma, 2)
+
+
+def camera_worker() -> None:
+    global latest_jpeg, latest_raw_frame, global_camera
+    while True:
+        with state_lock:
+            state["yolo_status"] = "loading"
+            state["yolo_error"] = ""
+        broadcast_state()
         try:
-            model.fuse()
-        except Exception:
-            pass
+            _camera_pipeline()
+        except Exception as exc:
+            with state_lock:
+                state["yolo_status"] = "error"
+                state["yolo_error"] = f"{type(exc).__name__}: {exc}"
+                state["camera_status"] = "disconnected"
+                state["camera_image_status"] = "unknown"
+                state["camera_mean_luma"] = None
+                state["camera_fps"] = 0.0
+                state["pipeline_fps"] = 0.0
+                state["infer_ms"] = 0.0
+            with latest_frame_lock:
+                latest_jpeg = None
+                latest_raw_frame = None
+            log(f"yolo-worker-error {type(exc).__name__}: {exc}; retrying in 5s")
+            broadcast_state()
+        finally:
+            if global_camera is not None:
+                global_camera.stop()
+                global_camera = None
+        time.sleep(5)
 
-    camera = ThreadedCamera(CAMERA_INDEX)
-    global_camera = camera
-    if not camera.is_opened():
-        log(f"camera-open-failed index={CAMERA_INDEX}")
-        return
-    camera.start()
-    log(camera.describe())
 
+def _camera_pipeline() -> None:
+    global latest_jpeg, latest_raw_frame, global_camera
+    model = load_yolo_model()
+    with state_lock:
+        state["yolo_status"] = "waiting_camera"
+
+    camera = None
+    last_frame_time = time.monotonic()
     last_count = -1
     metric_frames = 0
     metric_start = time.perf_counter()
@@ -955,17 +1044,52 @@ def camera_worker() -> None:
     encode_ms_acc = 0.0
     last_seq = -1
     while True:
+        if camera is None:
+            camera = ThreadedCamera(CAMERA_INDEX)
+            if not camera.is_opened():
+                camera.stop()
+                camera = None
+                with state_lock:
+                    state["camera_status"] = "disconnected"
+                    state["camera_image_status"] = "unknown"
+                    state["camera_mean_luma"] = None
+                log(f"camera-open-failed index={CAMERA_INDEX}; retrying in 5s")
+                broadcast_state()
+                time.sleep(5)
+                continue
+            global_camera = camera
+            camera.start()
+            last_seq = -1
+            last_frame_time = time.monotonic()
+            with state_lock:
+                state["camera_status"] = "connecting"
+            log(camera.describe())
         frame_start = time.perf_counter()
         ok, frame, camera_fps, seq = camera.read()
         after_capture = time.perf_counter()
-        if not ok or frame is None:
+        if not ok or frame is None or seq == last_seq:
+            if time.monotonic() - last_frame_time > 5:
+                log("camera-frame-timeout; reconnecting")
+                camera.stop()
+                camera = None
+                global_camera = None
+                with latest_frame_lock:
+                    latest_jpeg = None
+                    latest_raw_frame = None
+                with state_lock:
+                    state["camera_status"] = "disconnected"
+                    state["camera_image_status"] = "unknown"
+                    state["camera_mean_luma"] = None
+                    state["yolo_status"] = "waiting_camera"
+                    state["camera_fps"] = 0.0
+                    state["pipeline_fps"] = 0.0
+                broadcast_state()
+                time.sleep(5)
+                continue
             time.sleep(0.02)
             continue
-        if seq == last_seq:
-            time.sleep(0.001)
-            continue
         last_seq = seq
-
+        last_frame_time = time.monotonic()
         height, width = frame.shape[:2]
         with torch.inference_mode():
             results = model(
@@ -978,13 +1102,37 @@ def camera_worker() -> None:
         after_infer = time.perf_counter()
         person_count = len(results[0].boxes)
         boxes = boxes_from_result(results[0], width, height)
+        image_status, mean_luma = camera_image_health(frame)
         with state_lock:
+            health_changed = (
+                state["camera_image_status"] != image_status
+                or state["yolo_status"] != "running"
+            )
+            state["camera_status"] = "connected"
+            state["camera_image_status"] = image_status
+            state["camera_mean_luma"] = mean_luma
+            state["yolo_status"] = "running"
+            state["yolo_error"] = ""
+            state["yolo_last_success"] = time.time()
             current_lux = state.get("lux_avg")
+        if health_changed:
+            log(f"camera-image-status={image_status} mean_luma={mean_luma:.2f}")
+            broadcast_state()
+        with state_lock:
+            candidate_due = (_auto_candidate_level is not None
+                             and time.monotonic() - _auto_candidate_since >= AUTO_LEVEL_STABLE_SEC)
+        if person_count != last_count or candidate_due:
+            set_level_from_count(person_count)
+            if person_count != last_count:
+                last_count = person_count
+                broadcast_state()
+
         level = choose_auto_level(person_count, current_lux)
         annotated = results[0].plot()
         cv2.putText(
             annotated,
-            f"people={person_count} L{level.level} {level.label}",
+            ("IMAGE TOO DARK | " if image_status == "dark" else "")
+            + f"people={person_count} L{level.level} {level.label}",
             (14, 28),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.72,
@@ -1024,11 +1172,6 @@ def camera_worker() -> None:
             capture_ms_acc = 0.0
             encode_ms_acc = 0.0
 
-        if person_count != last_count:
-            last_count = person_count
-            set_level_from_count(person_count)
-            broadcast_state()
-
         if DetectionSummary is not None:
             summary = DetectionSummary(
                 person_count=person_count,
@@ -1055,12 +1198,20 @@ def mjpeg_stream():
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    return render_template(
+        "index.html", auto_levels=AUTO_LEVELS,
+        daylight_lux_threshold=DAYLIGHT_LUX_THRESHOLD,
+        mid_people_max=MID_PEOPLE_MAX,
+        countdown_seconds=COUNTDOWN_SECONDS, button_pin=PIN_IN,
+    )
 
 
 @app.route("/video_feed")
 def video_feed():
-    return Response(mjpeg_stream(), mimetype="multipart/x-mixed-replace; boundary=frame")
+    return Response(
+        mjpeg_stream(), mimetype="multipart/x-mixed-replace; boundary=frame",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.route("/api/status")
@@ -1073,9 +1224,11 @@ def api_light():
     data = request.get_json(force=True, silent=True) or {}
     brightness = int(data.get("brightness", state["brightness"]))
     with state_lock:
+        if state["emergency_trigger"]:
+            return jsonify({"ok": False, "message": "Emergency is active"}), 409
         state["mode"] = "manual"
         state["brightness"] = max(0, min(100, brightness))
-    ok, msg = send_light(state["brightness"], "api-manual-control")
+        ok, msg = send_light(state["brightness"], "api-manual-control")
     broadcast_state()
     return jsonify({"ok": ok, "message": msg, "state": get_public_state()})
 
@@ -1097,17 +1250,18 @@ def api_light_single(device_id: str):
         return jsonify({"ok": False, "message": f"Device {device_id} not found"}), 404
     
     with state_lock:
+        if state["emergency_trigger"]:
+            return jsonify({"ok": False, "message": "Emergency is active"}), 409
         state["mode"] = "manual"
         state["brightness"] = max(0, min(100, brightness))
-    
-    ok, msg = send_light(state["brightness"], "api-single-control", target_device)
+        ok, msg = send_light(state["brightness"], "api-single-control", target_device)
     broadcast_state()
     return jsonify({"ok": ok, "message": msg, "state": get_public_state()})
 
 
 @socketio.on("connect")
 def on_connect():
-    socketio.emit("state", get_public_state())
+    emit("state", get_public_state())
 
 
 @socketio.on("set_mode")
@@ -1116,19 +1270,16 @@ def on_set_mode(data):
     if mode not in ("auto", "manual"):
         return
     with state_lock:
+        if state["emergency_trigger"]:
+            return
         state["mode"] = mode
-        person_count = state["person_count"]
-    log(f"mode-change mode={mode}")
-    if mode == "auto":
-        with state_lock:
-            current_lux = state.get("lux_avg")
-        level = choose_auto_level(person_count, current_lux)
-        with state_lock:
+        log(f"mode-change mode={mode}")
+        if mode == "auto":
+            level = choose_auto_level(state["person_count"], state.get("lux_avg"))
             state["level"] = level.level
             state["level_label"] = level.label
             state["brightness"] = level.brightness
-        # Use Group 6 when switching back to auto
-        send_light(level.brightness, f"back-to-auto L{level.level} {level.label}", group_id=6)
+            send_light(level.brightness, f"back-to-auto L{level.level} {level.label}", group_id=6)
     broadcast_state()
 
 
@@ -1137,7 +1288,7 @@ def on_set_brightness(data):
     """Stage brightness in manual mode – does NOT send to light yet."""
     brightness = max(0, min(100, int(data.get("brightness", 0))))
     with state_lock:
-        if state["mode"] != "manual":
+        if state["mode"] != "manual" or state["emergency_trigger"]:
             return
         state["pending_brightness"] = brightness
     broadcast_state()
@@ -1150,7 +1301,7 @@ def on_send_brightness(data):
     group_id = data.get("group_id")  # Extract group_id from socket data
     
     with state_lock:
-        if state["mode"] != "manual":
+        if state["mode"] != "manual" or state["emergency_trigger"]:
             return
         raw = data.get("brightness")
         if raw is not None:
@@ -1162,15 +1313,15 @@ def on_send_brightness(data):
         state["brightness"] = brightness
         state["pending_brightness"] = None
 
-    target_device = None
-    if device_id:
-        for device in DEVICES:
-            if device["id"] == device_id:
-                target_device = device
-                break
+        target_device = None
+        if device_id:
+            for device in DEVICES:
+                if device["id"] == device_id:
+                    target_device = device
+                    break
 
-    # Pass both target_device and group_id to send_light
-    send_light(brightness, "web-manual-send", target_device, group_id=group_id)
+        # Pass both target_device and group_id to send_light
+        send_light(brightness, "web-manual-send", target_device, group_id=group_id)
     broadcast_state()
 
 
@@ -1180,8 +1331,25 @@ def _lux_worker() -> None:
     
     last_broadcast_avg: Optional[float] = None
     client = None
+    missing_port = False
     
     while True:
+        if not os.path.exists(USB_LUX_PORT):
+            if not missing_port:
+                missing_port = True
+                if client:
+                    client.close()
+                    client = None
+                _lux_samples.clear()
+                with state_lock:
+                    state["lux_raw"] = None
+                    state["lux_avg"] = None
+                    state["lux_error"] = f"USB lux port not found: {USB_LUX_PORT}"
+                log(f"lux-port-missing {USB_LUX_PORT}; retrying every 5s")
+                broadcast_state()
+            time.sleep(5)
+            continue
+        missing_port = False
         lux = None
         now = time.time()
         try:
@@ -1279,32 +1447,41 @@ def on_set_group(data):
     device_id = data.get("device_id")
     group_id = int(data.get("group_id", 0))
     
-    # Find and update device
-    target_device = None
-    for d in DEVICES:
-        if d["id"] == device_id:
-            d["group_id"] = group_id
-            target_device = d
-            break
-            
-    if target_device:
-        save_devices(DEVICES)
-        packet = build_group_set_packet(device_id, group_id)
-        log(f"set-group device={target_device['name']} group={group_id}")
-        _start_retry_worker(target_device, packet, "set-group")
+    with state_lock:
+        if state["emergency_trigger"]:
+            return
+        # Find and update device
+        target_device = None
+        for d in DEVICES:
+            if d["id"] == device_id:
+                d["group_id"] = group_id
+                target_device = d
+                break
+
+        if target_device:
+            save_devices(DEVICES)
+            packet = build_group_set_packet(device_id, group_id)
+            log(f"set-group device={target_device['name']} group={group_id}")
+            _start_retry_worker(target_device, packet, "set-group")
     broadcast_state()
 
 
 def _gpio_worker() -> None:
-    """Monitor GPIO PIN_IN (22) and control PIN_OUTS (14, 16)."""
+    """Read the button on BOARD pin 22 and control the relay on BOARD pin 16."""
+    if not USE_GPIO:
+        log("GPIO monitoring disabled (ENABLE_GPIO=0).")
+        return
     if not HAS_GPIO:
+        with state_lock:
+            state["gpio_status"] = "unavailable"
         log("Jetson.GPIO is not available. GPIO monitoring is disabled.")
         return
 
     try:
         GPIO.setwarnings(False)
         GPIO.setmode(GPIO.BOARD)
-        GPIO.setup(PIN_IN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+        # Jetson.GPIO does not configure pull resistors; the input needs a stable bias.
+        GPIO.setup(PIN_IN, GPIO.IN)
         
         # Setup each output pin, logging any channel failures without crashing
         active_outs = []
@@ -1316,8 +1493,14 @@ def _gpio_worker() -> None:
             except Exception as e:
                 log(f"GPIO Pin {pin} output setup failed (might be invalid or system-reserved): {e}")
         
+        if not active_outs:
+            raise RuntimeError("No relay outputs initialized")
         log(f"Jetson.GPIO initialized. Active outputs: {active_outs}")
+        with state_lock:
+            state["gpio_status"] = "enabled"
     except Exception as e:
+        with state_lock:
+            state["gpio_status"] = "unavailable"
         log(f"Jetson.GPIO initialization failed: {e}")
         return
 
@@ -1339,7 +1522,6 @@ def _gpio_worker() -> None:
                 if state.get("emergency_trigger") != triggered:
                     state["emergency_trigger"] = triggered
                     log(f"Emergency state changed: {triggered} (outputs={out_state})")
-                    broadcast_state()
                     # Streetlight group linkage
                     if triggered:
                         global _countdown_generation
@@ -1365,6 +1547,7 @@ def _gpio_worker() -> None:
                         state["brightness"] = level.brightness
                         send_light(level.brightness, f"emergency-off-restore L{level.level}", group_id=6)
                         log(f"Emergency cleared: restoring group 6 to L{level.level} brightness={level.brightness}")
+                    broadcast_state()
         except Exception as exc:
             log(f"GPIO-worker-loop-failed: {exc}")
         time.sleep(0.1)
@@ -1377,7 +1560,7 @@ global_camera = None
 def cleanup():
     if global_camera is not None:
         global_camera.stop()
-    if USE_GPIO:
+    if USE_GPIO and HAS_GPIO:
         try:
             GPIO.cleanup()
         except Exception:

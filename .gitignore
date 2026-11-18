@@ -4,3 +4,4 @@ core
 models/
 *.bak*
 .DS_Store
+devices.local.json

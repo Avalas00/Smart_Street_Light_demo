@@ -1,120 +1,79 @@
-# AGX Streetlight Lite
+# Smart Street Light Demo
 
-This is a trimmed streetlight edge app for the AGX.
+Jetson 路燈展示服務。網站由 Flask 和 Socket.IO 提供，YOLO26n 在 Jetson 上偵測行人，照度計透過 USB／Modbus 回報照度。這個部署版本使用 YOLO，VLM 關閉。
 
-## What app.py does
+## 功能與連接埠
 
-- Runs a Flask + Socket.IO web UI on `APP_PORT` (default `5050`).
-- Runs a TCP server on `TCP_PORT` (default `5566`) for the streetlight device.
-- Reads `/dev/video0` by default and runs YOLO26n person detection.
-- Uses the bundled model at `models/yolo26n.pt`.
-- Runs YOLO on `cuda:0` through the project `.venv` when CUDA is available.
-- Shows the live YOLO stream on the web page.
-- Computes streetlight level from person count:
-  - L0 standby: 0 people, 20%
-  - L1 person-near: 1 person, 55%
-  - L2 people-flow: 2-3 people, 75%
-  - L3 high-alert: 4+ people, 100%
-- Sends dimming packets to `LIGHT_TARGET_IP` (default `192.168.50.202`).
-- Supports auto/manual mode from the web page.
-- Supports manual dimming from the web page slider.
-- Publishes status and packet logs to the web page.
-- Calls the VLM harness only when `ENABLE_VLM=1`.
+- 網頁與 API 使用 TCP 5050，Gateway 以 TCP Client 連到 Jetson 的 5566。
+- 網頁支援手動單燈控制、第 6 組原生群控、群組設定、亮度回報、封包紀錄、即時影像及斷線恢復。
+- 自動調光依行人數與照度選擇 L0–L3。GPIO 警報會切到 L4，亮度指令及模式切換在警報解除前暫停。群控部分成功時，程式會單獨補送還未確認的燈。
+- GPIO 使用 BOARD pin 22 接收警報按鈕（低電位觸發），BOARD pin 16 驅動高電位有效的繼電器。Pin 14 是接地。按鈕輸入需要外部穩定偏壓。
 
-## Streetlight packet
+| 等級 | 條件 | 亮度 |
+|---|---|---|
+| L0 | 照度高於 270 lux | 0% |
+| L1 | 0 人 | 10% |
+| L2 | 1–3 人 | 30% |
+| L3 | 4 人以上 | 60% |
+| L4 | 實體警報按下 | 100% |
 
-The packet format follows `/home/lucas/Desktop/LungPin/app.py`:
+照度未取得時依人數判斷。一般自動降級需持續 15 秒，升級需穩定 1 秒。
 
-```text
-02 0B 52 00 24 E9 79 D6 01 <brightness 0-100> <checksum>
-```
+## Docker（Jetson）
 
-`checksum = sum(first 10 bytes) % 256`.
+映像適用於 ARM64 Jetson、JetPack 5.1.2／L4T R35.4.1，使用 NVIDIA Container Runtime。使用 NVIDIA 的 CUDA PyTorch 與 Ultralytics YOLO26n；建置時下載並驗證與既有 Jetson 部署相同的 YOLO 權重。映像只封裝路燈服務與 YOLO 推論所需元件，VLM 預設關閉。
 
-## What Gemma does
+### 建置
 
-`gemma4:e2b` is used as an image-language safety judge through Ollama. It receives:
+~~~bash
+docker build -t smart-streetlight-demo:jetpack5-novlm .
+~~~
 
-- One JPEG frame.
-- YOLO metadata from the harness: person count, level, brightness, frame size, boxes, trigger reason.
+若 Docker 26 安裝仍使用 legacy builder，可使用 `DOCKER_BUILDKIT=0 docker build -t smart-streetlight-demo:jetpack5-novlm .`。
 
-It returns JSON:
+### 隔離測試
 
-```json
-{
-  "alert": true,
-  "risk_level": "medium",
-  "abnormal_type": "fallen_pose",
-  "message": "疑似有人跌倒，請確認現場。",
-  "recommended_brightness": 100,
-  "confidence": 0.82
-}
-```
+在同一台已由 PM2 提供服務的 Jetson 上，用 15050 驗證容器首頁與狀態 API：
 
-Gemma is not in the direct dimming control path. YOLO still controls auto brightness. Gemma adds semantic abnormal-behavior warning.
+~~~bash
+docker run --rm --runtime nvidia \
+  -p 127.0.0.1:15050:5050 \
+  smart-streetlight-demo:jetpack5-novlm
+~~~
 
-## VLM harness design
+此模式適合驗證 HTTP、Socket.IO 與 CUDA 環境。容器沒掛攝影機和照度計時，狀態頁會回報裝置尚未連線。
 
-The harness is in `vlm_harness.py`, and the model adapter is in `vlm_alert.py`.
+### 實機部署
 
-The app calls only:
+正式使用容器前，先在維護時段釋放原本使用 5050／5566、攝影機、照度計與 GPIO 的程序。使用 host network，讓 Gateway 連到原本的 Jetson 位址，路燈程式也能讀到 Gateway 來源 IP。
 
-```python
-trigger = vlm_harness.begin(summary)
-alert = vlm_harness.inspect(image_jpeg, summary, trigger)
-vlm_harness.finish()
-```
+~~~bash
+cp --no-clobber devices.json devices.local.json
 
-This makes VLM easy to remove:
+docker run -d --name smart-streetlight-demo --restart unless-stopped \
+  --runtime nvidia --network host \
+  --device /dev/video0 --device /dev/ttyUSB0 \
+  --device /dev/gpiochip0 \
+  --mount type=bind,source="$(pwd)/devices.local.json",target=/opt/streetlight/devices.json \
+  -e ENABLE_GPIO=1 -e JETSON_MODEL_NAME=JETSON_ORIN_NX \
+  -e YOLO_DEVICE=cuda:0 \
+  smart-streetlight-demo:jetpack5-novlm
+~~~
 
-```bash
-ENABLE_VLM=0 python3 app.py
-```
+`JETSON_MODEL_NAME` 和裝置路徑對應目前使用的 Orin NX。其他 Jetson 請依型號與實際 GPIO 裝置調整。綁定本機 `devices.local.json` 能讓群組設定跨容器重建保存。Docker 預設以 `/dev/ttyUSB0`、9600 baud 和 Modbus 位址 77 讀取照度計。
 
-or remove `vlm_harness.py` / `vlm_alert.py`; the YOLO and streetlight path stays independent.
+## 原生 PM2 服務
 
-Current harness triggers:
+已配置 NVIDIA PyTorch、Jetson.GPIO 和 Python 依賴的 Jetson 可繼續使用 PM2。把 `yolo26n.pt` 放在 `models/`，現有 `ecosystem.config.js` 會使用該路徑。
 
-- person present (`VLM_TRIGGER_PEOPLE`, default `1`)
-- YOLO level threshold (`VLM_TRIGGER_LEVEL`, default `1`)
-- crowd check (`person_count >= 3`)
-- fallen pose candidate from wide person box aspect ratio
-- cooldown via `VLM_MIN_INTERVAL_SEC` (default `20`)
-
-## PM2
-
-Start:
-
-```bash
-cd /home/lucas/Desktop/streetlight_lite_agx
+~~~bash
 pm2 start ecosystem.config.js
-pm2 save
-```
-
-Logs:
-
-```bash
 pm2 logs streetlight-lite-agx
-```
+~~~
 
-Restart:
+## 迴歸測試
 
-```bash
-pm2 restart streetlight-lite-agx
-```
-
-Stop:
-
-```bash
-pm2 stop streetlight-lite-agx
-```
-
-## Run without PM2
-
-```bash
-cd /home/lucas/Desktop/streetlight_lite_agx
-APP_PORT=5050 TCP_PORT=5566 ENABLE_VLM=1 VLM_MODEL=gemma4:e2b python3 app.py
-```
-
-AGX currently has Ollama `0.21.2` and `gemma4:e2b` downloaded.
-# smart_street_light_demo
+~~~bash
+python3 -m unittest test_brightness test_level_guide test_gpio test_yolo_pipeline
+node test_brightness_ui.js
+~~~

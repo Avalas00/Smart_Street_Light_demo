@@ -1,0 +1,7 @@
+**
+!Dockerfile
+!requirements-docker.txt
+!app.py
+!devices.json
+!templates/
+!templates/index.html

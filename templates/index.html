@@ -39,6 +39,8 @@
 
         body {
             margin: 0;
+            display: grid;
+            grid-template-rows: 64px auto minmax(0, 1fr);
             overflow: hidden;
             font-family: 'Noto Sans TC', -apple-system, sans-serif;
             background: var(--bg);
@@ -67,13 +69,77 @@
         }
 
         main {
-            height: calc(100dvh - 64px);
+            height: auto;
             min-height: 0;
             display: grid;
             grid-template-columns: minmax(0, 1fr) 420px;
             gap: 24px;
             padding: 24px;
             padding-left: 32px;
+        }
+
+        .level-guide {
+            display: grid;
+            grid-template-columns: 72px minmax(0, 1fr);
+            column-gap: 12px;
+            padding: 10px 32px;
+            border-bottom: 1px solid var(--line);
+            background: var(--panel);
+            font-size: 12px;
+            letter-spacing: 0;
+        }
+
+        .level-guide h2 {
+            grid-row: 1 / 3;
+            align-self: center;
+            margin: 0;
+            font-size: 13px;
+            letter-spacing: 0;
+        }
+
+        .level-guide dl {
+            display: grid;
+            grid-template-columns: repeat(5, minmax(0, 1fr));
+            margin: 0;
+        }
+
+        .level-guide-rule {
+            min-width: 0;
+            padding: 0 12px;
+            border-left: 1px solid var(--line);
+        }
+
+        .level-guide-rule dt {
+            display: flex;
+            align-items: baseline;
+            gap: 10px;
+            font-weight: 700;
+            line-height: 1.5;
+        }
+
+        .level-guide-rule dt strong {
+            color: var(--green);
+            font-variant-numeric: tabular-nums;
+        }
+
+        .level-guide-rule dd {
+            margin: 2px 0 0;
+            color: var(--muted);
+            line-height: 1.5;
+            overflow-wrap: anywhere;
+        }
+
+        .level-guide-rule.emergency dt,
+        .level-guide-rule.emergency dt strong {
+            color: var(--red);
+        }
+
+        .level-guide-note {
+            grid-column: 2;
+            margin: 5px 0 0 12px;
+            color: var(--muted);
+            font-size: 11px;
+            line-height: 1.5;
         }
 
         .nav-sidebar {
@@ -575,6 +641,8 @@
             box-shadow: 0 2px 8px rgba(0, 0, 0, 0.03);
         }
 
+        .pill[hidden] { display: none; }
+
         .pill.ok {
             color: var(--green);
             border-color: #A3C9AE;
@@ -650,6 +718,7 @@
 
         @media (max-width: 1000px) {
             body {
+                display: block;
                 overflow: auto;
             }
 
@@ -668,6 +737,45 @@
                 border-radius: 16px;
             }
         }
+
+        @media (max-width: 700px) {
+            header {
+                height: auto;
+                min-height: 64px;
+                flex-wrap: wrap;
+                gap: 8px;
+                padding: 12px 16px;
+            }
+
+            .level-guide {
+                grid-template-columns: minmax(0, 1fr);
+                gap: 6px;
+                padding: 10px 16px;
+            }
+
+            .level-guide h2 {
+                grid-row: auto;
+            }
+
+            .level-guide dl {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                row-gap: 8px;
+            }
+
+            .level-guide-rule:nth-child(odd) {
+                padding-left: 0;
+                border-left: 0;
+            }
+
+            .level-guide-rule.emergency {
+                grid-column: 1 / -1;
+            }
+
+            .level-guide-note {
+                grid-column: 1;
+                margin: 0;
+            }
+        }
     </style>
 </head>
 
@@ -675,8 +783,37 @@
     <div id="emergency-banner"><span>🚨 緊急按鈕已觸發！警報與繼電器輸出聯動中 🚨</span></div>
     <header>
         <h1>AGX 智慧路燈精簡版</h1>
-        <div id="device-pill" class="pill warn">路燈未連線</div>
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+            <span id="live-status" class="pill warn" role="status" hidden>即時連線重連中</span>
+            <div id="device-pill" class="pill warn">路燈未連線</div>
+        </div>
     </header>
+    <section class="level-guide" aria-labelledby="level-guide-title">
+        <h2 id="level-guide-title">等級設定</h2>
+        <dl>
+            <div class="level-guide-rule" data-level-rule="0">
+                <dt>L0 <strong>{{ auto_levels[0].brightness }}%</strong></dt>
+                <dd>照度 &gt; {{ daylight_lux_threshold }} lux，不限人數</dd>
+            </div>
+            <div class="level-guide-rule" data-level-rule="1">
+                <dt>L1 <strong>{{ auto_levels[1].brightness }}%</strong></dt>
+                <dd>照度 &le; {{ daylight_lux_threshold }} lux，0 人</dd>
+            </div>
+            <div class="level-guide-rule" data-level-rule="2">
+                <dt>L2 <strong>{{ auto_levels[2].brightness }}%</strong></dt>
+                <dd>照度 &le; {{ daylight_lux_threshold }} lux，1&ndash;{{ mid_people_max }} 人</dd>
+            </div>
+            <div class="level-guide-rule" data-level-rule="3">
+                <dt>L3 <strong>{{ auto_levels[3].brightness }}%</strong></dt>
+                <dd>照度 &le; {{ daylight_lux_threshold }} lux，{{ mid_people_max + 1 }} 人以上</dd>
+            </div>
+            <div class="level-guide-rule emergency" data-level-rule="4">
+                <dt>L4 <strong>{{ auto_levels[4].brightness }}%</strong></dt>
+                <dd>緊急按鈕觸發（Pin {{ button_pin }} LOW），優先處理</dd>
+            </div>
+        </dl>
+        <p class="level-guide-note">L0&ndash;L3 為自動模式目標亮度；照度未取得時依人數判斷；降級確認 {{ countdown_seconds }} 秒。L4 不受人數與照度限制。</p>
+    </section>
     <main>
         <nav class="nav-sidebar">
             <div id="nav-home" class="nav-item active" onclick="switchTab('home')">🏠 首頁</div>
@@ -686,10 +823,12 @@
         <div id="page-home" style="display: contents;">
         <section class="stage">
             <div class="video-wrap">
-                <img src="/video_feed" alt="YOLO 即時辨識畫面">
+                <img id="live-video" src="/video_feed" alt="YOLO 即時辨識畫面">
             </div>
             <div class="stats">
                 <div class="stat"><span>偵測人數</span><strong id="people">0</strong></div>
+                <div class="stat"><span>攝影機影像</span><strong id="camera-health">初始化中</strong></div>
+                <div class="stat"><span>YOLO</span><strong id="yolo-health">載入中</strong></div>
                 <div class="stat"><span>自動 Level</span><strong id="level">L0</strong></div>
                 <div class="stat"><span>狀態</span><strong id="level-label">standby</strong></div>
                 <div class="stat" id="countdown-stat"><span>倒數計時</span><strong id="countdown">--</strong></div>
@@ -806,6 +945,8 @@
     <script>
         const socket = io();
         const els = {
+            liveStatus: document.getElementById("live-status"),
+            liveVideo: document.getElementById("live-video"),
             people: document.getElementById("people"),
             level: document.getElementById("level"),
             levelLabel: document.getElementById("level-label"),
@@ -837,6 +978,7 @@
             emergencyStat: document.getElementById("emergency-stat"),
             emergencyVal: document.getElementById("emergency-val"),
             brightnessData: {},  // Store device brightness data
+            brightnessTimestamps: {},
         };
 
         function switchTab(tabId) {
@@ -856,9 +998,59 @@
         switchTab('home');
 
         let _pendingBrightness = null; // staged value waiting for send
+        let _sentBrightness = null;
         let _ctrlTarget = 'single';
+        let _currentMode = "auto";
+        let _emergencyActive = false;
+
+        function syncSelectedBrightness() {
+            if (_pendingBrightness !== null || _ctrlTarget !== 'single') return false;
+            const brightness = els.brightnessData[els.deviceSelect?.value];
+            if (!Number.isInteger(brightness)) return false;
+            els.slider.value = brightness;
+            els.sliderValue.textContent = `${brightness}%`;
+            return true;
+        }
+
+        function applyBrightnessReport(data, flash = false) {
+            const { device_id, brightness } = data;
+            if (!device_id || !/^[0-9A-F]{10}$/i.test(device_id)
+                || !Number.isInteger(brightness) || brightness < 0 || brightness > 100) return;
+            const ts = Number(data.ts) || 0;
+            if (ts < (els.brightnessTimestamps[device_id] || 0)) return;
+            if (_sentBrightness && device_id === _sentBrightness.device_id
+                && brightness === _sentBrightness.brightness && ts > _sentBrightness.afterTs) {
+                if (_pendingBrightness === _sentBrightness.brightness
+                    && _ctrlTarget === 'single' && els.deviceSelect?.value === device_id) {
+                    _pendingBrightness = null;
+                    els.sendBtn.classList.remove('pending');
+                    els.sendBtn.title = '';
+                }
+                _sentBrightness = null;
+            }
+            els.brightnessData[device_id] = brightness;
+            els.brightnessTimestamps[device_id] = ts;
+            document.querySelectorAll(`[data-device-id="${device_id}"]`).forEach(card => {
+                const strong = card.querySelector('.dev-brightness');
+                if (!strong) return;
+                strong.textContent = `${brightness}%`;
+                if (flash) {
+                    strong.style.color = 'var(--green)';
+                    setTimeout(() => { strong.style.color = ''; }, 600);
+                }
+            });
+            const dimming = document.getElementById(`dc-${device_id}`)?.querySelector('[data-field="dimming"]');
+            if (dimming) dimming.textContent = `${brightness}%`;
+            syncSelectedBrightness();
+        }
 
         function setControlTarget(target) {
+            if (target !== _ctrlTarget) {
+                _pendingBrightness = null;
+                _sentBrightness = null;
+                els.sendBtn.classList.remove('pending');
+                els.sendBtn.title = '';
+            }
             _ctrlTarget = target;
             els.ctrlSingleBtn.classList.toggle('active', target === 'single');
             els.ctrlGroupBtn.classList.toggle('active', target === 'group');
@@ -867,16 +1059,33 @@
         }
 
         function setMode(mode) {
-            socket.emit("set_mode", { mode });
+            if (socket.connected && !_emergencyActive) socket.emit("set_mode", { mode });
+        }
+
+        function updateControlAvailability() {
+            const connected = socket.connected;
+            const manual = _currentMode === "manual";
+            const controlsAvailable = connected && !_emergencyActive;
+            els.liveStatus.hidden = connected;
+            els.autoBtn.disabled = !controlsAvailable;
+            els.manualBtn.disabled = !controlsAvailable;
+            els.slider.disabled = !controlsAvailable || !manual;
+            els.sendBtn.disabled = !controlsAvailable || !manual;
+            els.setGroupBtn.disabled = !controlsAvailable || !manual;
         }
 
         function updateMode(mode) {
+            _currentMode = mode;
             const manual = mode === "manual";
+            if (!manual) {
+                _pendingBrightness = null;
+                _sentBrightness = null;
+                els.sendBtn.classList.remove('pending');
+                els.sendBtn.title = '';
+            }
             els.autoBtn.classList.toggle("active", !manual);
             els.manualBtn.classList.toggle("active", manual);
-            els.slider.disabled = !manual;
-            els.sendBtn.disabled = !manual;
-            els.setGroupBtn.disabled = !manual;
+            updateControlAvailability();
 
             // Hide/Show manual-only panels
             if (els.manualPanel) els.manualPanel.style.display = manual ? 'block' : 'none';
@@ -884,6 +1093,7 @@
         }
 
         function setGroup() {
+            if (!socket.connected || _emergencyActive) return;
             const selectedDevice = els.deviceSelect?.value;
             if (!selectedDevice) {
                 alert("請先選擇特定的路燈再設定群組");
@@ -894,15 +1104,26 @@
         }
 
         function sendBrightness() {
+            if (!socket.connected || _emergencyActive) return;
             const data = { brightness: Number(els.slider.value) };
             if (_ctrlTarget === 'single') {
                 data.device_id = els.deviceSelect?.value || null;
+                if (!data.device_id) return;
+                _sentBrightness = {
+                    device_id: data.device_id, brightness: data.brightness,
+                    afterTs: els.brightnessTimestamps[data.device_id] || 0,
+                };
+                _pendingBrightness = data.brightness;
+                els.sendBtn.classList.add('pending');
+                els.sendBtn.title = `等待 ${data.device_id} 回報 ${data.brightness}%`;
             } else {
                 data.group_id = Number(els.ctrlGroupId.value);
+                _sentBrightness = null;
+                _pendingBrightness = null;
+                els.sendBtn.classList.remove('pending');
+                els.sendBtn.title = '';
             }
             socket.emit("send_brightness", data);
-            _pendingBrightness = null;
-            els.sendBtn.classList.remove("pending");
         }
 
         function updateVlm(alert) {
@@ -939,7 +1160,26 @@
         }
 
         function renderState(data) {
-            els.people.textContent = data.person_count ?? 0;
+            Object.entries(data.device_brightness || {}).forEach(([device_id, brightness]) => {
+                applyBrightnessReport({ device_id, brightness, ts: data.device_brightness_ts?.[device_id] });
+            });
+            const cameraLabels = { starting: "初始化中", connecting: "連線中", disconnected: "未連線" };
+            const imageLabel = data.camera_status === "connected"
+                ? (data.camera_image_status === "dark" ? "影像過暗" : "正常")
+                : (cameraLabels[data.camera_status] || "未知");
+            const cameraHealth = document.getElementById("camera-health");
+            cameraHealth.textContent = imageLabel;
+            cameraHealth.style.color = data.camera_status === "connected" && data.camera_image_status === "ok"
+                ? "var(--green)" : "var(--amber)";
+            const yoloLabels = { loading: "載入中", waiting_camera: "等待影像", running: "運作中", error: "辨識錯誤" };
+            const yoloHealth = document.getElementById("yolo-health");
+            yoloHealth.textContent = yoloLabels[data.yolo_status] || "未知";
+            yoloHealth.title = data.yolo_error || "";
+            yoloHealth.style.color = data.yolo_status === "running" ? "var(--green)"
+                : data.yolo_status === "error" ? "var(--red)" : "var(--amber)";
+            const detectionAvailable = data.yolo_status === "running"
+                && data.camera_status === "connected" && data.camera_image_status === "ok";
+            els.people.textContent = detectionAvailable ? (data.person_count ?? 0) : "--";
             els.level.textContent = `L${data.level ?? 0}`;
 
             const cdActive = Boolean(data.countdown_active);
@@ -949,10 +1189,11 @@
                 els.levelLabel.textContent = data.level_label || "standby";
             }
 
-            if (_pendingBrightness === null) {
+            if (_pendingBrightness === null && !syncSelectedBrightness()) {
                 els.slider.value = data.brightness ?? 0;
                 els.sliderValue.textContent = `${data.brightness ?? 0}%`;
             }
+            _emergencyActive = Boolean(data.emergency_trigger);
             updateMode(data.mode || "auto");
             updateVlm(data.vlm_last_alert);
 
@@ -960,13 +1201,14 @@
             els.luxAvg.textContent = lux !== null && lux !== undefined ? `${lux}` : '--';
 
             // 更新緊急按鈕狀態
-            const emergencyActive = Boolean(data.emergency_trigger);
+            const emergencyActive = _emergencyActive;
             if (els.emergencyBanner) {
                 els.emergencyBanner.style.display = emergencyActive ? "flex" : "none";
             }
             if (els.emergencyVal) {
-                els.emergencyVal.textContent = emergencyActive ? "🚨 警報中" : "正常";
-                els.emergencyVal.style.color = emergencyActive ? "var(--red)" : "var(--green)";
+                const gpioStatus = data.gpio_status;
+                els.emergencyVal.textContent = gpioStatus === "disabled" ? "未啟用" : gpioStatus === "unavailable" ? "無法使用" : gpioStatus === "starting" ? "初始化中" : emergencyActive ? "🚨 警報中" : "正常";
+                els.emergencyVal.style.color = gpioStatus !== "enabled" ? "var(--muted, #849F90)" : emergencyActive ? "var(--red)" : "var(--green)";
             }
             if (els.emergencyStat) {
                 els.emergencyStat.style.background = emergencyActive ? "rgba(248, 81, 73, 0.15)" : "";
@@ -997,30 +1239,35 @@
                 if (deviceStats && data.devices) {
                     deviceStats.innerHTML = data.devices.map(device => {
                         const isLost = data.device_lost?.[device.id] ?? false;
-                        const brightness = isLost ? '--' : (data.device_brightness?.[device.id] ?? 0);
+                        const reported = els.brightnessData[device.id];
+                        const brightness = isLost || reported == null ? '--' : `${reported}%`;
                         const groupId = device.group_id ?? 0;
                         const lostBadge = isLost ? `<span class="lost-badge">失聯</span>` : '';
                         return `<div class="stat" data-device-id="${device.id}" style="${isLost ? 'background:#1d0c0c;' : ''}">
                             <span>${escapeHtml(device.name)} (群組 ${groupId})${lostBadge}</span>
-                            <strong class="dev-brightness" style="${isLost ? 'color:var(--red);' : ''}">${brightness}%</strong>
+                            <strong class="dev-brightness" style="${isLost ? 'color:var(--red);' : ''}">${brightness}</strong>
                         </div>`;
                     }).join("");
                 }
             } else if (data.devices && data.device_brightness) {
                 // Device list unchanged — only patch brightness values in-place
-                els.brightnessData = data.device_brightness;
                 data.devices.forEach(device => {
                     const isLost = data.device_lost?.[device.id] ?? false;
                     const cards = document.querySelectorAll(`[data-device-id="${device.id}"]`);
                     cards.forEach(card => {
                         const strong = card.querySelector('.dev-brightness');
                         if (strong) {
-                            const newVal = isLost ? '--' : `${data.device_brightness[device.id] ?? 0}%`;
+                            const reported = els.brightnessData[device.id];
+                            const newVal = isLost || reported == null ? '--' : `${reported}%`;
                             if (strong.textContent !== newVal) strong.textContent = newVal;
                         }
                     });
                 });
             }
+            syncSelectedBrightness();
+            Object.values(data.device_detail || {}).forEach(detail => {
+                if (detail.device_id) renderDeviceDetail(detail);
+            });
 
             const connected = Boolean(data.device_connected);
             els.devicePill.className = connected ? "pill ok" : "pill warn";
@@ -1089,41 +1336,26 @@
         });
 
         els.deviceSelect?.addEventListener("change", () => {
-            const selectedDevice = els.deviceSelect.value;
-            if (selectedDevice && els.brightnessData) {
-                const deviceBrightness = els.brightnessData[selectedDevice];
-                if (deviceBrightness !== undefined) {
-                    els.slider.value = deviceBrightness;
-                    els.sliderValue.textContent = `${deviceBrightness}%`;
-                    _pendingBrightness = null;
-                    els.sendBtn?.classList.remove("pending");
-                }
-            }
+            _pendingBrightness = null;
+            _sentBrightness = null;
+            els.sendBtn?.classList.remove("pending");
+            els.sendBtn.title = '';
+            syncSelectedBrightness();
         });
 
-        socket.on("state", renderState);
+        let _socketStateVersion = 0;
+        let _lastSocketState = 0;
+        socket.on("state", (data) => {
+            _socketStateVersion += 1;
+            _lastSocketState = Date.now();
+            renderState(data);
+        });
         // Lightweight countdown tick — only updates the timer, no full re-render
         socket.on("countdown_tick", (data) => {
             renderCountdown(data.active, data.remaining);
         });
         socket.on("device_brightness_update", (data) => {
-            // Instant per-device brightness update without full DOM rebuild
-            const { device_id, brightness } = data;
-            if (device_id && brightness !== undefined) {
-                // Update cached brightness data
-                els.brightnessData[device_id] = brightness;
-                // Targeted DOM update for all instances
-                const cards = document.querySelectorAll(`[data-device-id="${device_id}"]`);
-                cards.forEach(card => {
-                    const strong = card.querySelector('.dev-brightness');
-                    if (strong) {
-                        strong.textContent = `${brightness}%`;
-                        strong.style.transition = 'color 0.15s';
-                        strong.style.color = 'var(--green)';
-                        setTimeout(() => { strong.style.color = ''; }, 600);
-                    }
-                });
-            }
+            applyBrightnessReport(data, true);
         });
 
         // ── Device detail telemetry ──────────────────────────────────────
@@ -1217,11 +1449,12 @@
             });
         }
 
-        socket.on("device_detail_update", (d) => {
+        function renderDeviceDetail(d) {
             const section = document.getElementById("device-detail-section");
             if (!section) return;
             const existing = document.getElementById(`dc-${d.device_id}`);
             const oldData = _detailCache[d.device_id] || {};
+            if ((d.ts || 0) < Math.max(oldData.ts || 0, els.brightnessTimestamps[d.device_id] || 0)) return;
             const staleChanged = (oldData.telemetry_stale ?? false) !== Boolean(d.telemetry_stale);
             if (!existing) {
                 section.insertAdjacentHTML("beforeend", renderDetailCard(d));
@@ -1232,7 +1465,8 @@
                 flashFields(existing, oldData, d);
             }
             _detailCache[d.device_id] = d;
-        });
+        }
+        socket.on("device_detail_update", renderDeviceDetail);
 
         // ── Smart log parser ──────────────────────────────────────────────
         const LOG_RULES = [
@@ -1409,7 +1643,70 @@
         socket.on("packet_log", (data) => { appendLogLine(data.msg); });
         socket.on("vlm_alert", updateVlm);
 
-        fetch("/api/status").then((res) => res.json()).then(renderState).catch(() => { });
+        let statusRequest = null;
+        async function refreshStatus() {
+            if (statusRequest) return;
+            const version = _socketStateVersion;
+            const request = new AbortController();
+            statusRequest = request;
+            const timer = setTimeout(() => request.abort(), 4000);
+            try {
+                const response = await fetch("/api/status", { cache: "no-store", signal: request.signal });
+                if (response.ok) {
+                    const state = await response.json();
+                    if (version === _socketStateVersion) renderState(state);
+                }
+            } catch {
+                // The next poll or socket connection can restore the snapshot.
+            } finally {
+                clearTimeout(timer);
+                statusRequest = null;
+            }
+        }
+
+        let videoRetry = null;
+        let videoRequest = 0;
+        function restartVideo() {
+            clearTimeout(videoRetry);
+            videoRetry = null;
+            els.liveVideo.src = '/video_feed?reconnect=' + (++videoRequest);
+        }
+        els.liveVideo.addEventListener("error", () => {
+            if (videoRetry === null) videoRetry = setTimeout(restartVideo, 2000);
+        });
+        els.liveVideo.addEventListener("load", () => {
+            clearTimeout(videoRetry);
+            videoRetry = null;
+        });
+
+        socket.on("connect", () => {
+            updateControlAvailability();
+            refreshStatus();
+            restartVideo();
+        });
+        socket.on("disconnect", (reason) => {
+            updateControlAvailability();
+            refreshStatus();
+            if (reason === "io server disconnect") socket.connect();
+        });
+        socket.on("connect_error", updateControlAvailability);
+        window.addEventListener("online", () => {
+            refreshStatus();
+            restartVideo();
+        });
+        document.addEventListener("visibilitychange", () => {
+            if (!document.hidden) {
+                refreshStatus();
+                restartVideo();
+            }
+        });
+        setInterval(() => {
+            if (!document.hidden && (!socket.connected || Date.now() - _lastSocketState > 10000)) {
+                refreshStatus();
+            }
+        }, 5000);
+        updateControlAvailability();
+        refreshStatus();
     </script>
 </body>
 
